@@ -8,6 +8,9 @@
 </head>
 <body>
 
+  <!-- Full-page background picture (set by the code) -->
+  <div id="bgLayer" class="bg-layer" hidden><div id="bgImg" class="bg-img"></div></div>
+
   <!-- Top bar -->
   <header class="topbar">
     <div class="brand" id="brand">Gallery</div>
@@ -22,40 +25,100 @@
   </header>
 
   <main>
-    <!-- SETUP SCREEN (shown when the page is opened without a folder) -->
+    <!-- ============ ADMIN PANEL (shown when the page is opened without a folder) ============ -->
     <section id="setup" class="setup" hidden>
-      <h1>Create a gallery</h1>
-      <p class="muted">Paste a Google Drive folder link. You'll get a link to send to your customer.</p>
+      <div class="setup-grid">
 
-      <label>Gallery title
-        <input id="inTitle" type="text" placeholder="e.g. Graduation Day">
-      </label>
-      <label>Studio name
-        <input id="inBy" type="text" placeholder="e.g. Miracle Studio">
-      </label>
-      <label>Google Drive folder link
-        <input id="inFolder" type="text" placeholder="https://drive.google.com/drive/folders/...">
-      </label>
+        <div class="controls">
+          <h1>Gallery maker</h1>
+          <p class="muted">Paste a Google Drive folder, choose how the gallery looks, then copy the link for your customer.</p>
 
-      <p class="hint">The folder must be shared as <b>Anyone with the link → Viewer</b>.</p>
-      <p id="keyWarning" class="warn" hidden>
-        You haven't connected your Cloudflare Worker yet. Open <code>config.js</code> and paste your Worker address (see README.md, Step 2).
-      </p>
-      <p id="setupError" class="warn" hidden></p>
+          <p id="keyWarning" class="warn" hidden>
+            You haven't connected your Cloudflare Worker yet. Open <code>config.js</code> and paste your Worker address (see README.md, Step 2).
+          </p>
 
-      <button id="btnCreate" class="btn primary" type="button">Create gallery link</button>
+          <label class="block">Google Drive folder link
+            <input id="inFolder" type="text" placeholder="https://drive.google.com/drive/folders/...">
+          </label>
+          <p class="hint">The folder must be shared as <b>Anyone with the link → Viewer</b>.</p>
+          <button id="btnLoad" class="btn primary" type="button">Load folder</button>
+          <p id="setupError" class="warn" hidden></p>
+          <p id="loadInfo" class="muted small" hidden></p>
 
-      <div id="result" class="result" hidden>
-        <p class="muted">Send this link to your customer:</p>
-        <input id="outLink" type="text" readonly>
-        <div class="row">
-          <button id="btnCopyLink" class="btn" type="button">Copy link</button>
-          <a id="btnOpenLink" class="btn" target="_blank" rel="noopener">Open gallery</a>
+          <div id="options" class="options" hidden>
+
+            <div class="group">
+              <label class="check"><input type="checkbox" id="inShowTitle" checked> Show title</label>
+              <input id="inTitle" type="text" placeholder="e.g. Graduation Day">
+              <label class="check"><input type="checkbox" id="inShowBy" checked> Show studio name</label>
+              <input id="inBy" type="text" placeholder="e.g. Miracle Studio">
+            </div>
+
+            <div class="group">
+              <div class="group-title">Layout</div>
+              <div class="seg" id="segLayout">
+                <button type="button" data-l="grid">Photo Grid</button>
+                <button type="button" data-l="square">Square</button>
+                <button type="button" data-l="column">Column</button>
+                <button type="button" data-l="oneup">One-up</button>
+              </div>
+              <p class="hint" id="layoutHint"></p>
+              <label class="range" id="rowC">Photos per row on a computer <b id="vC"></b>
+                <input id="inC" type="range" min="2" max="8" step="1">
+              </label>
+              <label class="range" id="rowM">Photos per row on a phone <b id="vM"></b>
+                <input id="inM" type="range" min="1" max="4" step="1">
+              </label>
+              <label class="range">Space between photos <b id="vG"></b>
+                <input id="inG" type="range" min="0" max="24" step="1">
+              </label>
+            </div>
+
+            <div class="group">
+              <div class="group-title">Background picture</div>
+              <p class="hint">Pick a photo from the folder to fill the whole page behind the gallery.</p>
+              <div id="bgPicker" class="bg-picker"></div>
+              <label class="range">Darkness <b id="vDim"></b>
+                <input id="inDim" type="range" min="0" max="90" step="5">
+              </label>
+              <label class="range">Blur <b id="vBl"></b>
+                <input id="inBl" type="range" min="0" max="20" step="1">
+              </label>
+            </div>
+
+            <div class="group">
+              <label class="check"><input type="checkbox" id="inDl" checked> Show download buttons</label>
+              <p class="hint">Unticking this only hides the buttons. Anyone who has the Drive folder link can still download from Drive.</p>
+            </div>
+
+            <div class="result">
+              <p class="muted">Send this link to your customer:</p>
+              <input id="outLink" type="text" readonly>
+              <div class="row">
+                <button id="btnCopyLink" class="btn primary" type="button">Copy link</button>
+                <a id="btnOpenLink" class="btn" target="_blank" rel="noopener">Open gallery</a>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <div class="preview" id="previewBox" hidden>
+          <div class="preview-bar">
+            <span class="muted">Preview</span>
+            <div class="seg small" id="segDevice">
+              <button type="button" data-dev="desktop" class="on">Computer</button>
+              <button type="button" data-dev="phone">Phone</button>
+            </div>
+          </div>
+          <div class="frame-wrap" id="frameWrap">
+            <iframe id="previewFrame" title="Gallery preview"></iframe>
+          </div>
+        </div>
+
       </div>
     </section>
 
-    <!-- GALLERY -->
+    <!-- ============ GALLERY ============ -->
     <section id="gallery" hidden>
       <div class="hero" id="hero">
         <h1 id="title"></h1>
@@ -66,7 +129,7 @@
       <ul id="grid" class="grid"></ul>
 
       <footer id="contact" class="contact" hidden>
-        <p class="muted" id="contactText"></p>
+        <p id="contactText"></p>
         <div class="row" id="contactLinks"></div>
       </footer>
     </section>
