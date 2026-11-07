@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gallery</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="brand" id="brand">Gallery</div>
+    <div class="actions" id="actions" hidden>
+      <button id="btnFavFilter" class="pill" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>
+        Favorites <span id="favCount">0</span>
+      </button>
+      <button id="btnDownloadAll" class="pill" type="button">Download all</button>
+      <button id="btnSend" class="pill primary" type="button">Send my picks</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- SETUP SCREEN (shown when the page is opened without a folder) -->
+    <section id="setup" class="setup" hidden>
+      <h1>Create a gallery</h1>
+      <p class="muted">Paste a Google Drive folder link. You'll get a link to send to your customer.</p>
+
+      <label>Gallery title
+        <input id="inTitle" type="text" placeholder="e.g. Graduation Day">
+      </label>
+      <label>Studio name
+        <input id="inBy" type="text" placeholder="e.g. Miracle Studio">
+      </label>
+      <label>Google Drive folder link
+        <input id="inFolder" type="text" placeholder="https://drive.google.com/drive/folders/...">
+      </label>
+
+      <p class="hint">The folder must be shared as <b>Anyone with the link → Viewer</b>.</p>
+      <p id="keyWarning" class="warn" hidden>
+        You haven't connected your Cloudflare Worker yet. Open <code>config.js</code> and paste your Worker address (see README.md, Step 2).
+      </p>
+      <p id="setupError" class="warn" hidden></p>
+
+      <button id="btnCreate" class="btn primary" type="button">Create gallery link</button>
+
+      <div id="result" class="result" hidden>
+        <p class="muted">Send this link to your customer:</p>
+        <input id="outLink" type="text" readonly>
+        <div class="row">
+          <button id="btnCopyLink" class="btn" type="button">Copy link</button>
+          <a id="btnOpenLink" class="btn" target="_blank" rel="noopener">Open gallery</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- GALLERY -->
+    <section id="gallery" hidden>
+      <div class="hero" id="hero">
+        <h1 id="title"></h1>
+        <p id="by"></p>
+        <p id="count" class="muted"></p>
+      </div>
+      <div id="status" class="status"></div>
+      <ul id="grid" class="grid"></ul>
+
+      <footer id="contact" class="contact" hidden>
+        <p class="muted" id="contactText"></p>
+        <div class="row" id="contactLinks"></div>
+      </footer>
+    </section>
+
+    <!-- ERROR / MESSAGE -->
+    <section id="message" class="message" hidden></section>
+  </main>
+
+  <!-- LIGHTBOX (big photo viewer) -->
+  <div id="lightbox" class="lightbox" hidden>
+    <div class="lb-top">
+      <div class="lb-left">
+        <button id="lbClose" class="icon-btn" type="button" aria-label="Back">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span id="lbCounter" class="lb-counter"></span>
+      </div>
+      <div class="lb-right">
+        <button id="lbFav" class="icon-btn" type="button" aria-label="Favorite">
+          <svg viewBox="0 0 24 24" width="22" height="22" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>
+        </button>
+        <a id="lbDownload" class="icon-btn" target="_blank" rel="noopener" aria-label="Download">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+    </div>
+
+    <button id="lbPrev" class="nav-btn prev" type="button" aria-label="Previous">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div id="lbStage" class="lb-stage"></div>
+    <button id="lbNext" class="nav-btn next" type="button" aria-label="Next">
+      <svg viewBox="0 0 24 24" width="22" height="22"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+
+  <!-- SEND MY PICKS (popup) -->
+  <div id="sendModal" class="modal" hidden>
+    <div class="modal-box">
+      <h2>Your favorite photos</h2>
+      <p class="muted" id="sendInfo"></p>
+      <textarea id="sendText" readonly rows="8"></textarea>
+      <div class="row">
+        <button id="btnCopyList" class="btn primary" type="button">Copy list</button>
+        <button id="btnDownloadList" class="btn" type="button">Download .txt</button>
+        <button id="btnCloseSend" class="btn ghost" type="button">Close</button>
+      </div>
+      <p class="muted small" id="sendContactHint" hidden>Now send the list to your photographer. For Instagram and LINE, your list is copied first, so just paste it into the chat.</p>
+      <div class="row" id="sendContacts"></div>
+    </div>
+  </div>
+
+  <!-- DOWNLOAD ALL (popup) -->
+  <div id="dlModal" class="modal" hidden>
+    <div class="modal-box">
+      <h2>Download all photos</h2>
+      <p class="muted">Google Drive opens in a new tab. There, click the folder name at the top and choose <b>Download</b>. Drive packs everything into a zip file for you. Big folders come as several zip files.</p>
+      <div class="row">
+        <a id="btnOpenDrive" class="btn primary" target="_blank" rel="noopener">Open Google Drive</a>
+        <button id="btnCloseDl" class="btn ghost" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
