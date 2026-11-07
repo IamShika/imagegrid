@@ -5,7 +5,7 @@
 window.SITE_CONFIG = {
   // The address of your Cloudflare Worker (see README.md, Step 2).
   // It looks like: https://gallery-api.YOURNAME.workers.dev
-  WORKER_URL: "PASTE_YOUR_WORKER_URL_HERE",
+  WORKER_URL: "https://gallery-api.doramongameing.workers.dev",
 
   // Name shown under the gallery title, e.g. "by My Studio".
   // (You can also change it per gallery on the setup page.)
