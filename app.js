@@ -1,14 +1,17 @@
 // ============================================================
 //  Drive Gallery - the main code.
 //  How it works, in simple words:
-//   1. The page address looks like  ...?f=FOLDER_ID&l=column&c=4 ...
-//      (the admin panel makes these addresses for you)
-//   2. We ask your Cloudflare Worker: "what pictures/videos are in this folder?"
-//   3. We draw them in the layout you chose. Click one to see it big.
+//   1. A customer opens  ...?id=CODE   (a short code made by the gallery maker).
+//      With no code, the page is the gallery maker (it asks for your PIN).
+//   2. We ask your Cloudflare Worker: "what is gallery CODE, and what photos are in it?"
+//   3. We draw the photos in the layout you chose. Click one to see it big.
+//  All the texts are in lang.js (English + Thai).
 // ============================================================
 (() => {
   const cfg = window.SITE_CONFIG || {};
   const $ = (id) => document.getElementById(id);
+  const L = window.Lang;
+  const t = (key, vars) => L.t(key, vars);
 
   // ---------- Default look (you can change these in config.js under DEFAULTS) ----------
   const LAYOUTS = ['grid', 'square', 'column', 'oneup'];
@@ -20,43 +23,34 @@
 
   // ---------- Read the page address ----------
   const params   = new URLSearchParams(location.search);
-  const folderId = params.get('f');                       // which Drive folder
-  const title    = params.get('t') || 'Gallery';          // gallery title
-  const byName   = params.get('by') || cfg.DEFAULT_STUDIO_NAME || '';
-
-  // A number from the address, kept between min and max
-  const num = (key, def, min, max) => {
-    const v = parseInt(params.get(key), 10);
-    return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : def;
-  };
-  const bgParam = params.get('bg');
-  const P = {                                              // P = this gallery's look
-    layout:    LAYOUTS.includes(params.get('l')) ? params.get('l') : D.layout,
-    cols:      num('c', D.cols, 1, 8),                    // photos per row on a computer
-    colsPhone: num('m', D.colsPhone, 1, 4),               // photos per row on a phone
-    gap:       num('g', D.gap, 0, 24),                    // space between photos (px)
-    dim:       num('dim', D.dim, 0, 90),                  // how dark the background is (%)
-    blur:      num('bl', D.blur, 0, 20),                  // how blurry the background is (px)
-    bg:        (bgParam === 'none' || /^[A-Za-z0-9_-]{10,100}$/.test(bgParam || '')) ? bgParam : null, // null = first photo
-    showTitle: params.get('st') !== '0',
-    showBy:    params.get('sa') !== '0',
-    allowDl:   params.get('dl') !== '0',                  // show download buttons?
-  };
+  const rawId    = params.get('id');                                  // new short links: ?id=CODE
+  const code     = /^[a-z0-9]{6,16}$/.test(rawId || '') ? rawId : null;
+  const legacyFolder = params.get('f');                               // old long links: ?f=FOLDER_ID&...
+  const isPreview = params.get('preview') === '1';                    // the live preview inside the gallery maker
 
   // ---------- Things we keep track of ----------
+  let G = null;              // the gallery on screen: { code, folderId, title, by, P }
   let items = [];            // every photo/video in the folder
   let visible = [];          // what the grid is showing right now
   let favs = new Set();      // ids of favorite photos
+  let favKey = '';
   let showFavsOnly = false;
   let current = -1;          // which photo is open in the big viewer
   let lbOpen = false;
-  const storeKey = 'favs:' + folderId;
+  let msgPrefix = null;      // which error message is on screen
+  let statusState = '';      // '' | 'loading' | 'nofavs'
+  let previewDevice = null;  // in the maker's preview: 'desktop' or 'phone'
+  let adminRefresh = () => {};
 
   // ============================================================
   //  Small helper functions
   // ============================================================
+  const clamp = (v, def, min, max) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : def; };
   const hasWorker = () => cfg.WORKER_URL && !cfg.WORKER_URL.startsWith('PASTE_');
+  const base = () => cfg.WORKER_URL.replace(/\/+$/, '');
   const isVideo = (f) => f.mimeType.startsWith('video/');
+  const photosText = (n) => t(n === 1 ? 'photo.one' : 'photo.many', { n });
+  const videosText = (n) => t(n === 1 ? 'video.one' : 'video.many', { n });
 
   // Get the folder ID out of a pasted Google Drive link
   function extractFolderId(text) {
@@ -84,22 +78,10 @@
     if (meta && meta.width && meta.height) {
       let w = meta.width, h = meta.height;
       const rot = f.imageMediaMetadata && f.imageMediaMetadata.rotation;
-      if (rot === 1 || rot === 3 || rot === 90 || rot === 270) { const t = w; w = h; h = t; }
+      if (rot === 1 || rot === 3 || rot === 90 || rot === 270) { const x = w; w = h; h = x; }
       return w / h;
     }
     return 1.5; // unknown size: assume a normal 3:2 photo
-  }
-
-  function showMessage(heading, text) {
-    $('setup').hidden = true;
-    $('gallery').hidden = true;
-    $('actions').hidden = true;
-    const box = $('message');
-    box.innerHTML = '';
-    const h = document.createElement('h2'); h.textContent = heading;
-    const p = document.createElement('p');  p.textContent = text;
-    box.append(h, p);
-    box.hidden = false;
   }
 
   async function copyText(text) {
@@ -112,319 +94,238 @@
     }
   }
 
-  // ============================================================
-  //  TALK TO GOOGLE DRIVE (through your Cloudflare Worker)
-  // ============================================================
-  // We don't talk to Google directly. We ask YOUR Cloudflare Worker,
-  // and the Worker (which holds the secret key) asks Google for us.
-  async function fetchAll(id) {
-    const url = cfg.WORKER_URL.replace(/\/+$/, '') + '/?folder=' + encodeURIComponent(id);
+  // Show the top-bar buttons (favorites, download, send) only when a gallery is on screen
+  function setActions(show) {
+    $('actions').hidden = !show;
+    $('topbar').classList.toggle('has-actions', show);
+  }
 
-    const res = await fetch(url);                 // if this fails, the Worker address is wrong or offline
+  // A full-page message (errors). We keep the message KEY so it can switch language.
+  function showMessage(prefix) {
+    msgPrefix = prefix;
+    $('setup').hidden = true;
+    $('gallery').hidden = true;
+    setActions(false);
+    renderMessage();
+  }
+  function renderMessage() {
+    if (!msgPrefix) return;
+    const box = $('message');
+    box.innerHTML = '';
+    const h = document.createElement('h2'); h.textContent = t(msgPrefix + '.h');
+    const p = document.createElement('p');  p.textContent = t(msgPrefix + '.t');
+    box.append(h, p);
+    box.hidden = false;
+  }
+
+  // ============================================================
+  //  TALK TO YOUR CLOUDFLARE WORKER
+  // ============================================================
+  async function callWorker(url, opts) {
+    const res = await fetch(url, opts);            // throws if the address is wrong or offline
     let body = {};
     try { body = await res.json(); } catch (_) {}
-
     if (!res.ok) {
-      const e = new Error('Gallery server error');
+      const e = new Error('Worker error');
       e.status = (body.error && body.error.status) || res.status;
       e.reason = body.error && body.error.reason;
       throw e;
     }
-    // The address answered, but not with a file list: it isn't the gallery Worker.
-    if (!Array.isArray(body.files)) {
-      const e = new Error('Not the gallery Worker');
-      e.reason = 'notWorker';
-      throw e;
-    }
-    return body.files;
+    return body;
+  }
+  const notWorker = () => { const e = new Error('Not the gallery Worker'); e.reason = 'notWorker'; return e; };
+
+  async function fetchGallery(id) {
+    const body = await callWorker(base() + '/?id=' + encodeURIComponent(id));
+    // The address answered, but not like our Worker: it isn't the gallery Worker.
+    if (!Array.isArray(body.files) || !body.settings) throw notWorker();
+    return body;
+  }
+  async function fetchLegacy(folder) {
+    const body = await callWorker(base() + '/?folder=' + encodeURIComponent(folder));
+    if (!Array.isArray(body.files)) throw notWorker();
+    return body;
   }
 
-  function explainError(e) {
-    if (e.status === 404)
-      return ["Folder not found", "Check the link, and make sure the folder is shared as “Anyone with the link → Viewer”."];
-    if (e.reason === 'notWorker')
-      return ["That address isn't your Worker", "WORKER_URL in config.js points to something that is not the gallery Worker. It must be the address of the Worker that runs worker.js (README, Step 2)."];
-    if (e.reason === 'originNotAllowed')
-      return ["This website isn't allowed", "The Worker only accepts your own website. The owner needs to check ALLOWED_ORIGINS in Cloudflare (README, Step 2)."];
-    if (e.reason === 'badFolderId')
-      return ["That folder link doesn't look right", "Please make a new gallery link from the setup page."];
-    if (e.status === 403 && (e.reason === 'accessNotConfigured' || e.reason === 'SERVICE_DISABLED'))
-      return ["Drive API is not turned on", "In Google Cloud Console, enable “Google Drive API” for your project (README, Step 1)."];
-    if (e.status === 403 && (e.reason === 'forbidden' || e.reason === 'insufficientFilePermissions'))
-      return ["This folder is private", "The owner needs to share the folder as “Anyone with the link → Viewer”."];
-    if (e.status === 400 || e.status === 403 || e.status === 500)
-      return ["The gallery server isn't set up correctly", "The owner needs to check the secret key in Cloudflare and the Google API key (README, Steps 1 and 2)."];
-    return ["Couldn't reach the gallery server", "Check your internet connection. If you're the owner, check that WORKER_URL in config.js is the address of your deployed Worker (README, Step 2)."];
-  }
-
-  // ============================================================
-  //  ADMIN PANEL (when no folder is in the address)
-  // ============================================================
-  function initSetup() {
-    document.title = 'Gallery maker';
-    $('brand').textContent = cfg.DEFAULT_STUDIO_NAME || 'Gallery';
-    $('setup').hidden = false;
-    $('keyWarning').hidden = hasWorker();
-
-    // S = everything the admin has chosen so far
-    const S = {
-      folderId: null, photos: [],
-      title: '', by: cfg.DEFAULT_STUDIO_NAME || '',
-      showTitle: true, showBy: true,
-      layout: D.layout, cols: D.cols, colsPhone: D.colsPhone, gap: D.gap,
-      bg: 'auto', dim: D.dim, blur: D.blur,
-      allowDl: true,
-    };
-    let previewTimer = null;
-
-    // Put the starting values into the controls
-    $('inBy').value = S.by;
-    $('inC').value = S.cols;
-    $('inM').value = S.colsPhone;
-    $('inG').value = S.gap;
-    $('inDim').value = S.dim;
-    $('inBl').value = S.blur;
-
-    // The address of the finished gallery
-    function galleryUrl() {
-      const url = new URL(location.href);
-      url.search = ''; url.hash = '';
-      const set = (k, v) => url.searchParams.set(k, v);
-      set('f', S.folderId);
-      if (S.title.trim()) set('t', S.title.trim());
-      if (S.by.trim()) set('by', S.by.trim());
-      if (!S.showTitle) set('st', '0');
-      if (!S.showBy) set('sa', '0');
-      set('l', S.layout); set('c', S.cols); set('m', S.colsPhone); set('g', S.gap);
-      if (S.bg !== 'auto') set('bg', S.bg);
-      set('dim', S.dim); set('bl', S.blur);
-      if (!S.allowDl) set('dl', '0');
-      return url.toString();
-    }
-
-    const layoutHints = {
-      grid:   'Rows of equal height. Each photo keeps its own shape. This is the Lightroom look.',
-      square: 'Every photo is cropped to the same neat square.',
-      column: 'Columns side by side. Each photo keeps its own shape.',
-      oneup:  'One big photo at a time, top to bottom.',
-    };
-
-    // Refresh labels, buttons, link and preview after any change
-    function update() {
-      $('vC').textContent = S.cols;
-      $('vM').textContent = S.colsPhone;
-      $('vG').textContent = S.gap + ' px';
-      $('vDim').textContent = S.dim + '%';
-      $('vBl').textContent = S.blur + ' px';
-      $('inTitle').disabled = !S.showTitle;
-      $('inBy').disabled = !S.showBy;
-      $('layoutHint').textContent = layoutHints[S.layout];
-      $('rowC').hidden = S.layout === 'oneup';
-      $('rowM').hidden = S.layout === 'oneup';
-      document.querySelectorAll('#segLayout button').forEach((b) => b.classList.toggle('on', b.dataset.l === S.layout));
-      document.querySelectorAll('#bgPicker button').forEach((b) => b.classList.toggle('on', b.dataset.bg === S.bg));
-
-      if (!S.folderId) return;
-      const url = galleryUrl();
-      $('outLink').value = url;
-      $('btnOpenLink').href = url;
-
-      // Reload the preview a moment after the last change
-      clearTimeout(previewTimer);
-      previewTimer = setTimeout(() => {
-        const frame = $('previewFrame');
-        if (frame.dataset.src !== url) { frame.dataset.src = url; frame.src = url; }
-      }, 500);
-    }
-
-    // Connect each control to S
-    const bind = (id, key, kind) => {
-      $(id).addEventListener(kind === 'check' ? 'change' : 'input', (e) => {
-        S[key] = kind === 'num' ? parseInt(e.target.value, 10)
-               : kind === 'check' ? e.target.checked
-               : e.target.value;
-        update();
-      });
-    };
-    bind('inTitle', 'title');           bind('inBy', 'by');
-    bind('inShowTitle', 'showTitle', 'check'); bind('inShowBy', 'showBy', 'check');
-    bind('inC', 'cols', 'num');         bind('inM', 'colsPhone', 'num');   bind('inG', 'gap', 'num');
-    bind('inDim', 'dim', 'num');        bind('inBl', 'blur', 'num');
-    bind('inDl', 'allowDl', 'check');
-
-    document.querySelectorAll('#segLayout button').forEach((b) =>
-      b.addEventListener('click', () => { S.layout = b.dataset.l; update(); }));
-
-    document.querySelectorAll('#segDevice button').forEach((b) =>
-      b.addEventListener('click', () => {
-        document.querySelectorAll('#segDevice button').forEach((x) => x.classList.toggle('on', x === b));
-        $('frameWrap').classList.toggle('phone', b.dataset.dev === 'phone');
-      }));
-
-    // Small picture buttons for choosing the background
-    function renderBgPicker() {
-      const box = $('bgPicker');
-      box.innerHTML = '';
-      const add = (value, label, src) => {
-        const b = document.createElement('button');
-        b.type = 'button'; b.dataset.bg = value; b.title = label;
-        if (src) {
-          const img = document.createElement('img');
-          img.src = src; img.alt = label; img.loading = 'lazy';
-          b.appendChild(img);
-        } else {
-          b.textContent = label;
-        }
-        b.addEventListener('click', () => { S.bg = value; update(); });
-        box.appendChild(b);
-      };
-      add('auto', 'First photo');
-      add('none', 'None');
-      S.photos.slice(0, 120).forEach((f) => add(f.id, f.name, thumb(f, 160)));
-    }
-
-    // Load the folder: check it, then show the options and the preview
-    async function loadFolder() {
-      const err = $('setupError');
-      const id = extractFolderId($('inFolder').value);
-      err.hidden = true;
-      if (!id) {
-        err.textContent = "That doesn't look like a Google Drive folder link. Copy it from Drive → right-click the folder → Share → Copy link.";
-        err.hidden = false; return;
-      }
-      if (!hasWorker()) {
-        err.textContent = 'Add your Cloudflare Worker address to config.js first (README, Step 2).';
-        err.hidden = false; return;
-      }
-
-      const btn = $('btnLoad');
-      btn.disabled = true; btn.textContent = 'Loading…';
-      let files;
-      try {
-        files = await fetchAll(id);
-      } catch (e) {
-        const [h, t] = explainError(e);
-        err.textContent = h + '. ' + t;
-        err.hidden = false;
-        return;
-      } finally {
-        btn.disabled = false; btn.textContent = 'Load folder';
-      }
-
-      if (!files.length) {
-        err.textContent = 'No photos or videos were found directly inside that folder. (Sub-folders are not shown.)';
-        err.hidden = false; return;
-      }
-
-      S.folderId = id;
-      S.photos = files.filter((f) => !isVideo(f));
-      S.bg = 'auto';
-      const videos = files.length - S.photos.length;
-      $('loadInfo').textContent = S.photos.length + ' photo' + (S.photos.length === 1 ? '' : 's')
-        + (videos ? ' and ' + videos + ' video' + (videos === 1 ? '' : 's') : '') + ' found.'
-        + (S.photos.length > 120 ? ' The background picker shows the first 120 photos.' : '');
-      $('loadInfo').hidden = false;
-      renderBgPicker();
-      $('options').hidden = false;
-      $('previewBox').hidden = false;
-      update();
-    }
-
-    $('btnLoad').addEventListener('click', loadFolder);
-    $('inFolder').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadFolder(); });
-    $('inFolder').addEventListener('paste', () => setTimeout(loadFolder, 50));
-
-    $('btnCopyLink').addEventListener('click', async (e) => {
-      const ok = await copyText($('outLink').value);
-      e.target.textContent = ok ? 'Copied ✓' : 'Press Ctrl+C to copy';
-      setTimeout(() => (e.target.textContent = 'Copy link'), 2000);
-    });
-    $('outLink').addEventListener('focus', (e) => e.target.select());
-
-    update();
+  // Which message to show for an error
+  function errPrefix(e) {
+    if (e.reason === 'galleryNotFound') return 'err.gnf';
+    if (e.reason === 'legacyOff') return 'err.legacy';
+    if (e.status === 404) return 'err.notfound';
+    if (e.reason === 'notWorker') return 'err.notworker';
+    if (e.reason === 'originNotAllowed') return 'err.origin';
+    if (e.reason === 'badFolderId') return 'err.badfolder';
+    if (e.status === 403 && (e.reason === 'accessNotConfigured' || e.reason === 'SERVICE_DISABLED')) return 'err.apioff';
+    if (e.status === 403 && (e.reason === 'forbidden' || e.reason === 'insufficientFilePermissions')) return 'err.private';
+    if (e.status === 400 || e.status === 403 || e.status === 500) return 'err.server';
+    return 'err.net';
   }
 
   // ============================================================
   //  GALLERY
   // ============================================================
+  // Turn the stored settings into what the page needs.
+  // `s` comes from the Worker (new links) or is built from the address (old links).
+  function viewFrom(s, c) {
+    return {
+      code: c || null,
+      folderId: s.f || null,
+      title: s.t || '',
+      by: s.by || '',
+      P: {
+        layout:    LAYOUTS.includes(s.l) ? s.l : D.layout,
+        cols:      clamp(s.c, D.cols, 1, 8),             // photos per row on a computer
+        colsPhone: clamp(s.m, D.colsPhone, 1, 4),        // photos per row on a phone
+        gap:       clamp(s.g, D.gap, 0, 24),             // space between photos (px)
+        dim:       clamp(s.dim, D.dim, 0, 90),           // how dark the background is (%)
+        blur:      clamp(s.bl, D.blur, 0, 20),           // how blurry the background is (px)
+        bg:        s.bg === 'none' || /^[A-Za-z0-9_-]{10,100}$/.test(s.bg || '') ? s.bg : 'auto',
+        showTitle: s.st !== false,
+        showBy:    s.sa !== false,
+        allowDl:   s.dl !== false,
+      },
+    };
+  }
+
+  function legacySettings() {
+    return {
+      f: legacyFolder, t: params.get('t') || '', by: params.get('by') || cfg.DEFAULT_STUDIO_NAME || '',
+      st: params.get('st') !== '0', sa: params.get('sa') !== '0', dl: params.get('dl') !== '0',
+      l: params.get('l'), c: params.get('c'), m: params.get('m'), g: params.get('g'),
+      dim: params.get('dim'), bl: params.get('bl'), bg: params.get('bg'),
+    };
+  }
+
   async function initGallery() {
-    $('brand').textContent = byName || 'Gallery';
-    document.title = title + (byName ? ' – ' + byName : '');
+    $('brand').textContent = cfg.DEFAULT_STUDIO_NAME || t('gallery');
+    if (isPreview) { initPreview(); return; }
 
-    if (!hasWorker()) {
-      showMessage('Not set up yet', 'Open config.js and paste your Cloudflare Worker address (see README.md, Step 2).');
-      return;
-    }
+    if (!hasWorker()) { showMessage('err.setup'); return; }
 
-    try { favs = new Set(JSON.parse(localStorage.getItem(storeKey) || '[]')); } catch (_) { favs = new Set(); }
-
-    // Title and studio name (the admin can hide them)
-    const showBy = P.showBy && !!byName;
     $('gallery').hidden = false;
-    $('title').textContent = title;
-    $('title').hidden = !P.showTitle;
-    $('by').textContent = byName ? 'by ' + byName : '';
-    $('by').hidden = !showBy;
-    $('hero').classList.toggle('compact', !P.showTitle && !showBy);
-    $('status').textContent = 'Loading…';
+    statusState = 'loading'; renderStatus();
 
+    let data, view;
     try {
-      items = await fetchAll(folderId);
+      if (code) {
+        data = await fetchGallery(code);
+        view = viewFrom(data.settings, code);
+      } else if (legacyFolder) {
+        data = await fetchLegacy(legacyFolder);
+        view = viewFrom(legacySettings(), null);
+      } else {
+        const e = new Error('No gallery'); e.reason = 'galleryNotFound'; e.status = 404; throw e;
+      }
     } catch (e) {
-      const [h, t] = explainError(e);
-      showMessage(h, t);
+      showMessage(errPrefix(e));
       return;
     }
 
-    if (!items.length) {
-      showMessage('Nothing here yet', 'No photos or videos were found in this folder. (Photos inside sub-folders are not shown.)');
-      return;
+    L.hintCountry(data.country);                   // Thai visitors get Thai
+    if (!data.files.length) { showMessage('err.empty'); return; }
+    statusState = '';
+    applyView(view, data.files);
+  }
+
+  // The live preview inside the gallery maker: the maker sends us the photos and settings.
+  function initPreview() {
+    document.body.classList.add('preview-mode');
+    $('gallery').hidden = false;
+    window.addEventListener('message', (e) => {
+      if (e.origin !== location.origin || !e.data || e.data.type !== 'gallery-preview' || !e.data.settings) return;
+      previewDevice = e.data.device || null;
+      statusState = '';
+      applyView(viewFrom(e.data.settings, null), e.data.files);   // files are only sent when they change
+    });
+    parent.postMessage({ type: 'preview-ready' }, location.origin);
+  }
+
+  // Put a gallery on screen (or update it after a settings change)
+  function applyView(v, files) {
+    const prev = G;
+    G = v;
+    if (files) { items = files; items.forEach((f) => { f.ratio = ratioOf(f); }); }
+    if (!items.length) return;
+
+    const key = 'favs:' + (G.code || G.folderId || 'x');
+    if (key !== favKey) {
+      favKey = key;
+      try { favs = new Set(JSON.parse(localStorage.getItem(favKey) || '[]')); } catch (_) { favs = new Set(); }
     }
 
-    items.forEach((f) => { f.ratio = ratioOf(f); });
-    $('status').textContent = '';
-
-    const photos = items.filter((f) => !isVideo(f)).length;
-    const videos = items.length - photos;
-    $('count').textContent = photos + ' photo' + (photos === 1 ? '' : 's') + (videos ? ' · ' + videos + ' video' + (videos === 1 ? '' : 's') : '');
-
+    $('message').hidden = true; msgPrefix = null;
+    $('gallery').hidden = false;
+    renderHeader();
+    renderStatus();
     setupBackground();
-
-    $('actions').hidden = false;
-    $('btnDownloadAll').hidden = !(P.allowDl && cfg.SHOW_DOWNLOAD_ALL !== false);
+    $('btnDownloadAll').hidden = !(G.P.allowDl && cfg.SHOW_DOWNLOAD_ALL !== false && G.folderId);
+    setActions(true);
     updateFavCount();
-    renderGrid();
+    if (files || !prev || prev.P.layout !== G.P.layout) renderGrid(); else applyLayout();
     renderContactFooter();
   }
 
-  // The whole-page background picture, with its darkness and blur
-  function setupBackground() {
-    if (P.bg === 'none') return;
-    const photos = items.filter((f) => !isVideo(f));
-    const pick = (P.bg && photos.find((f) => f.id === P.bg)) || photos[0];   // chosen photo, or the first one
-    if (!pick) return;
+  // Title, studio name and photo count
+  function renderHeader() {
+    const P = G.P;
+    const title = G.title || t('gallery');
+    const showBy = P.showBy && !!G.by;
+    $('title').textContent = title;
+    $('title').hidden = !P.showTitle;
+    $('by').textContent = G.by ? t('by', { name: G.by }) : '';
+    $('by').hidden = !showBy;
+    $('hero').classList.toggle('compact', !P.showTitle && !showBy);
+    $('brand').textContent = G.by || cfg.DEFAULT_STUDIO_NAME || t('gallery');
+    if (!isPreview) document.title = title + (G.by ? ' – ' + G.by : '');
 
-    const layer = $('bgLayer');
+    const photos = items.filter((f) => !isVideo(f)).length;
+    const videos = items.length - photos;
+    $('count').textContent = photosText(photos) + (videos ? ' · ' + videosText(videos) : '');
+  }
+
+  function renderStatus() {
+    if (statusState === 'loading') $('status').textContent = t('loading');
+    else if (statusState === 'nofavs') $('status').textContent = t('noFavs');
+    else $('status').textContent = '';
+  }
+
+  // The whole-page background picture, with its darkness and blur
+  let bgToken = 0;
+  function setupBackground() {
+    const P = G.P, layer = $('bgLayer');
     layer.style.setProperty('--dim', String(P.dim / 100));
     layer.style.setProperty('--blur', P.blur + 'px');
+    if (P.bg === 'none') { layer.hidden = true; return; }
 
-    // Load the picture first, then show it (so it fades in without flashing)
+    const photos = items.filter((f) => !isVideo(f));
+    const pick = (P.bg !== 'auto' && photos.find((f) => f.id === P.bg)) || photos[0];   // chosen photo, or the first one
+    if (!pick) { layer.hidden = true; return; }
+
+    const src = thumb(pick, 1600);
+    if (layer.dataset.src === src) { layer.hidden = false; return; }
+
+    // Load the picture first, then show it (so it doesn't flash)
+    const token = ++bgToken;
     const probe = new Image();
     probe.onload = () => {
+      if (token !== bgToken) return;
       $('bgImg').style.backgroundImage = 'url("' + probe.src + '")';
+      layer.dataset.src = src;
       layer.hidden = false;
     };
     probe.onerror = () => {
       if (!probe.dataset.retry) { probe.dataset.retry = '1'; probe.src = fallbackThumb(pick, 1600); }
     };
-    probe.src = thumb(pick, 1600);
+    probe.src = src;
   }
 
   // Tell the grid how many photos per row, and how big the gaps are
   function applyLayout() {
     const grid = $('grid');
-    if (!grid || !visible.length) return;
-    const cols = window.innerWidth > 800 ? P.cols : P.colsPhone;
+    if (!grid || !G || !visible.length) return;
+    const P = G.P;
+    const desktop = previewDevice ? previewDevice === 'desktop' : window.innerWidth > 800;
+    const cols = desktop ? P.cols : P.colsPhone;
     grid.style.setProperty('--cols', cols);
     grid.style.setProperty('--gap', P.gap + 'px');
 
@@ -449,14 +350,11 @@
     visible = showFavsOnly ? items.filter((f) => favs.has(f.id)) : items;
     const grid = $('grid');
     grid.innerHTML = '';
-    grid.className = 'grid layout-' + P.layout;
-    const thumbW = P.layout === 'oneup' ? 1400 : 700;     // big single photos need a sharper thumbnail
+    grid.className = 'grid layout-' + G.P.layout;
+    const thumbW = G.P.layout === 'oneup' ? 1400 : 700;     // big single photos need a sharper thumbnail
 
-    if (!visible.length) {
-      $('status').textContent = showFavsOnly ? 'No favorites yet. Tap the ♡ on a photo to add it.' : '';
-    } else {
-      $('status').textContent = '';
-    }
+    statusState = !visible.length && showFavsOnly ? 'nofavs' : '';
+    renderStatus();
 
     const frag = document.createDocumentFragment();
     visible.forEach((f, i) => {
@@ -466,7 +364,7 @@
 
       const open = document.createElement('button');
       open.className = 'open'; open.type = 'button';
-      open.setAttribute('aria-label', 'Open ' + f.name);
+      open.setAttribute('aria-label', f.name);
       open.addEventListener('click', () => openLightbox(i));
 
       const img = document.createElement('img');
@@ -493,7 +391,7 @@
       const fav = document.createElement('button');
       fav.className = 'fav' + (favs.has(f.id) ? ' on' : '');
       fav.type = 'button';
-      fav.setAttribute('aria-label', 'Favorite');
+      fav.setAttribute('aria-label', t('lb.fav'));
       fav.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>';
       fav.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -513,7 +411,7 @@
   // ============================================================
   function toggleFav(id) {
     if (favs.has(id)) favs.delete(id); else favs.add(id);
-    try { localStorage.setItem(storeKey, JSON.stringify([...favs])); } catch (_) {}
+    try { localStorage.setItem(favKey, JSON.stringify([...favs])); } catch (_) {}
     updateFavCount();
   }
   function updateFavCount() { $('favCount').textContent = favs.size; }
@@ -549,7 +447,7 @@
     }
 
     const mail = (cfg.CONTACT_EMAIL || '').trim();
-    if (mail) out.push({ key: 'email', label: 'Email', href: 'mailto:' + mail, value: mail });
+    if (mail) out.push({ key: 'email', label: t('contact.email'), href: 'mailto:' + mail });
 
     return out;
   }
@@ -557,8 +455,8 @@
   // Buttons at the bottom of the gallery
   function renderContactFooter() {
     const links = contactLinks();
-    if (!links.length) return;
-    $('contactText').textContent = byName ? 'Questions? Contact ' + byName : 'Questions? Get in touch';
+    if (!links.length || !G) return;
+    $('contactText').textContent = G.by ? t('contact.by', { name: G.by }) : t('contact.generic');
     const box = $('contactLinks');
     box.innerHTML = '';
     links.forEach((c) => {
@@ -580,14 +478,15 @@
     $('sendContactHint').hidden = !(links.length && names.length);
     if (!names.length) return;
 
+    const title = (G && G.title) || t('gallery');
     links.forEach((c) => {
       const a = document.createElement('a');
       a.className = 'btn';
-      a.textContent = c.key === 'email' ? 'Email my picks' : 'Open ' + c.label;
+      a.textContent = c.key === 'email' ? t('send.email') : t('send.open', { name: c.label });
       if (c.key === 'email') {
         a.href = c.href
-          + '?subject=' + encodeURIComponent('My picks – ' + title)
-          + '&body=' + encodeURIComponent('Hi! These are the photos I picked:\n\n' + names.join('\n'));
+          + '?subject=' + encodeURIComponent(t('send.mail.subject', { title }))
+          + '&body=' + encodeURIComponent(t('send.mail.body') + '\n\n' + names.join('\n'));
       } else {
         a.href = c.href; a.target = '_blank'; a.rel = 'noopener';
         a.addEventListener('click', () => copyText(names.join('\n')));  // copy the list, then they paste it in the chat
@@ -598,31 +497,32 @@
 
   // ---------- "Download all" popup ----------
   $('btnDownloadAll').addEventListener('click', () => {
-    $('btnOpenDrive').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(folderId);
+    if (!G || !G.folderId) return;
+    $('btnOpenDrive').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId);
     $('dlModal').hidden = false;
   });
   $('btnCloseDl').addEventListener('click', () => ($('dlModal').hidden = true));
   $('dlModal').addEventListener('click', (e) => { if (e.target.id === 'dlModal') $('dlModal').hidden = true; });
 
   // ---------- "Send my picks" popup ----------
-  function pickedNames() {
-    return items.filter((f) => favs.has(f.id)).map((f) => f.name);
-  }
-  $('btnSend').addEventListener('click', () => {
+  const pickedNames = () => items.filter((f) => favs.has(f.id)).map((f) => f.name);
+  function fillSendModal() {
     const names = pickedNames();
-    $('sendInfo').textContent = names.length
-      ? names.length + ' photo' + (names.length === 1 ? '' : 's') + ' selected. Copy this list and send it to your photographer.'
-      : "You haven't picked any photos yet. Tap the ♡ on the photos you like first.";
+    $('sendInfo').textContent = names.length ? t('send.some', { n: names.length }) : t('send.none');
     $('sendText').value = names.join('\n');
     renderSendContacts(names);
+  }
+  $('btnSend').addEventListener('click', () => {
+    fillSendModal();
     $('sendModal').hidden = false;
   });
   $('btnCloseSend').addEventListener('click', () => ($('sendModal').hidden = true));
   $('sendModal').addEventListener('click', (e) => { if (e.target.id === 'sendModal') $('sendModal').hidden = true; });
   $('btnCopyList').addEventListener('click', async (e) => {
+    const b = e.currentTarget;
     const ok = await copyText($('sendText').value);
-    e.target.textContent = ok ? 'Copied ✓' : 'Press Ctrl+C';
-    setTimeout(() => (e.target.textContent = 'Copy list'), 2000);
+    b.textContent = t(ok ? 'send.copied' : 'send.ctrlc');
+    setTimeout(() => (b.textContent = t('send.copy')), 2000);
   });
   $('btnDownloadList').addEventListener('click', () => {
     const blob = new Blob([$('sendText').value], { type: 'text/plain' });
@@ -693,9 +593,9 @@
       stage.append(spin, img);
     }
 
-    $('lbCounter').textContent = (i + 1) + ' of ' + visible.length;
+    renderLbCounter();
     $('lbDownload').href = 'https://drive.google.com/uc?export=download&id=' + f.id;
-    $('lbDownload').hidden = !P.allowDl;
+    $('lbDownload').hidden = !G.P.allowDl;
     $('lbFav').classList.toggle('on', favs.has(f.id));
     $('lbPrev').hidden = i === 0;
     $('lbNext').hidden = i === visible.length - 1;
@@ -705,6 +605,9 @@
       const g = visible[n];
       if (g && !isVideo(g)) new Image().src = thumb(g, 2000);
     });
+  }
+  function renderLbCounter() {
+    if (current >= 0) $('lbCounter').textContent = t('lb.counter', { i: current + 1, n: visible.length });
   }
 
   $('lbClose').addEventListener('click', () => closeLightbox(false));
@@ -736,8 +639,409 @@
     if (Math.abs(dx) > 50) showAt(current + (dx < 0 ? 1 : -1));
   });
 
+  // When the language changes, redraw the texts the code made itself
+  function galleryRefresh() {
+    renderMessage();
+    if (!G) return;
+    renderHeader();
+    renderStatus();
+    renderContactFooter();
+    renderLbCounter();
+    if (!$('sendModal').hidden) fillSendModal();
+  }
+
+  // ============================================================
+  //  GALLERY MAKER (admin) - needs your PIN
+  // ============================================================
+  function initAdmin() {
+    $('setup').hidden = false;
+    $('brand').textContent = cfg.DEFAULT_STUDIO_NAME || t('gallery');
+    document.title = t('mk.title');
+    $('keyWarning').hidden = hasWorker();
+
+    // S = everything the admin has chosen so far
+    const S = {
+      pin: null, folderId: null, files: [], photos: [], code: null, saved: '',
+      title: '', by: '', showTitle: true, showBy: true,
+      layout: D.layout, cols: D.cols, colsPhone: D.colsPhone, gap: D.gap,
+      bg: 'auto', dim: D.dim, blur: D.blur, allowDl: true, desc: '',
+    };
+    let saving = false;
+    let frameReady = false;
+    let previewTimer = null;
+    let mineItems = [];
+    let info = null;                                   // function that gives the "found N photos" text
+    const errs = { pin: null, form: null, save: null, mine: null };   // functions that give the error text
+
+    // ---------- error texts (kept as functions so they follow the language) ----------
+    function errText(e) {
+      if (e.reason === 'badPin') return () => t('pin.bad');
+      if (e.reason === 'tooManyAttempts') return () => t('pin.locked');
+      if (e.reason === 'pinNotSet') return () => t('pin.notset');
+      if (e.reason === 'kvMissing') return () => t('err.kv');
+      const p = errPrefix(e);
+      return () => t(p + '.h') + '. ' + t(p + '.t');
+    }
+    function renderErrs() {
+      [['pin', 'pinError'], ['form', 'setupError'], ['save', 'saveMsg'], ['mine', 'mineError']].forEach(([k, id]) => {
+        const el = $(id), f = errs[k];
+        el.hidden = !f;
+        if (f) el.textContent = f();
+      });
+    }
+    function renderInfo() {
+      $('loadInfo').hidden = !info;
+      if (info) $('loadInfo').textContent = info();
+    }
+
+    // ---------- talk to the Worker's admin door ----------
+    async function admin(action, data) {
+      try {
+        return await callWorker(base() + '/admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({ pin: S.pin, action }, data)),
+        });
+      } catch (e) {
+        if (e.reason === 'badPin' && S.pin && action !== 'login') { logout(); errs.pin = errText(e); renderErrs(); }   // PIN was changed
+        throw e;
+      }
+    }
+
+    // ---------- sign in / out ----------
+    function showPin() {
+      $('pinBox').hidden = false; $('makerBox').hidden = true;
+      $('inPin').value = '';
+      renderErrs();
+    }
+    function showMaker() {
+      $('pinBox').hidden = true; $('makerBox').hidden = false;
+      errs.pin = null; renderErrs();
+      update();
+    }
+    async function login(pin, quiet) {
+      if (!hasWorker() || !pin) return false;
+      S.pin = pin;
+      $('btnLogin').disabled = true;
+      try {
+        await admin('login');
+      } catch (e) {
+        S.pin = null;
+        if (!quiet) { errs.pin = errText(e); renderErrs(); }
+        return false;
+      } finally {
+        $('btnLogin').disabled = false;
+      }
+      try { sessionStorage.setItem('pin', pin); } catch (_) {}   // remembered only until this tab is closed
+      showMaker();
+      return true;
+    }
+    function logout() {
+      S.pin = null;
+      try { sessionStorage.removeItem('pin'); } catch (_) {}
+      resetForm();
+      hideMine();
+      showPin();
+    }
+    $('btnLogin').addEventListener('click', () => login($('inPin').value.trim(), false));
+    $('inPin').addEventListener('keydown', (e) => { if (e.key === 'Enter') login($('inPin').value.trim(), false); });
+    $('btnLogout').addEventListener('click', logout);
+
+    // ---------- what the gallery will look like (the settings that get saved) ----------
+    function settingsFromS() {
+      return {
+        f: S.folderId, t: S.title.trim(), by: S.by.trim(), d: S.desc.trim(),
+        st: S.showTitle, sa: S.showBy, dl: S.allowDl,
+        l: S.layout, c: S.cols, m: S.colsPhone, g: S.gap,
+        bg: S.bg, dim: S.dim, bl: S.blur,
+      };
+    }
+
+    function syncInputs() {
+      $('inTitle').value = S.title; $('inBy').value = S.by; $('inDesc').value = S.desc;
+      $('inShowTitle').checked = S.showTitle; $('inShowBy').checked = S.showBy; $('inDl').checked = S.allowDl;
+      $('inC').value = S.cols; $('inM').value = S.colsPhone; $('inG').value = S.gap;
+      $('inDim').value = S.dim; $('inBl').value = S.blur;
+    }
+
+    function resetForm() {
+      Object.assign(S, {
+        folderId: null, files: [], photos: [], code: null, saved: '',
+        title: '', by: cfg.DEFAULT_STUDIO_NAME || '', showTitle: true, showBy: true,
+        layout: D.layout, cols: D.cols, colsPhone: D.colsPhone, gap: D.gap,
+        bg: 'auto', dim: D.dim, blur: D.blur, allowDl: true, desc: '',
+      });
+      $('inFolder').value = '';
+      $('options').hidden = true; $('previewBox').hidden = true; $('linksBox').hidden = true;
+      errs.form = null; errs.save = null; info = null;
+      syncInputs(); renderErrs(); renderInfo();
+    }
+
+    // ---------- refresh labels, buttons and the preview after any change ----------
+    function update() {
+      $('vC').textContent = S.cols;
+      $('vM').textContent = S.colsPhone;
+      $('vG').textContent = S.gap + ' px';
+      $('vDim').textContent = S.dim + '%';
+      $('vBl').textContent = S.blur + ' px';
+      $('inTitle').disabled = !S.showTitle;
+      $('inBy').disabled = !S.showBy;
+      $('layoutHint').textContent = t('hint.' + S.layout);
+      $('bgHint').textContent = t('mk.bgHint', { n: S.photos.length });
+      $('rowC').hidden = S.layout === 'oneup';
+      $('rowM').hidden = S.layout === 'oneup';
+      document.querySelectorAll('#segLayout button').forEach((b) => b.classList.toggle('on', b.dataset.l === S.layout));
+      document.querySelectorAll('#bgPicker button').forEach((b) => b.classList.toggle('on', b.dataset.bg === S.bg));
+
+      // The save button: "Save & get link" -> "Save changes" -> "Saved ✓"
+      const dirty = !!S.folderId && JSON.stringify(settingsFromS()) !== S.saved;
+      const btn = $('btnSave');
+      if (saving) { btn.textContent = t('mk.saving'); btn.disabled = true; }
+      else if (!S.code) { btn.textContent = t('mk.save'); btn.disabled = !S.folderId; }
+      else if (dirty) { btn.textContent = t('mk.saveChanges'); btn.disabled = false; }
+      else { btn.textContent = t('mk.saved'); btn.disabled = true; }
+      $('unsavedMsg').hidden = !(S.code && dirty && !saving);
+
+      // Send the new look to the preview a moment after the last change
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(() => sendPreview(false), 120);
+    }
+
+    // ---------- live preview (the gallery in a frame) ----------
+    function sendPreview(withFiles) {
+      const frame = $('previewFrame');
+      if (!frameReady || !frame.contentWindow || !S.folderId) return;
+      const msg = {
+        type: 'gallery-preview', settings: settingsFromS(),
+        device: $('frameWrap').classList.contains('phone') ? 'phone' : 'desktop',
+      };
+      if (withFiles) msg.files = S.files;
+      frame.contentWindow.postMessage(msg, location.origin);
+    }
+    window.addEventListener('message', (e) => {
+      if (e.origin !== location.origin || !e.data || e.data.type !== 'preview-ready') return;
+      frameReady = true;
+      sendPreview(true);
+    });
+
+    document.querySelectorAll('#segDevice button').forEach((b) =>
+      b.addEventListener('click', () => {
+        document.querySelectorAll('#segDevice button').forEach((x) => x.classList.toggle('on', x === b));
+        $('frameWrap').classList.toggle('phone', b.dataset.dev === 'phone');
+        sendPreview(false);
+      }));
+
+    // ---------- connect each control to S ----------
+    const bind = (id, key, kind) => {
+      $(id).addEventListener(kind === 'check' ? 'change' : 'input', (e) => {
+        S[key] = kind === 'num' ? parseInt(e.target.value, 10)
+               : kind === 'check' ? e.target.checked
+               : e.target.value;
+        update();
+      });
+    };
+    bind('inTitle', 'title');   bind('inBy', 'by');   bind('inDesc', 'desc');
+    bind('inShowTitle', 'showTitle', 'check'); bind('inShowBy', 'showBy', 'check'); bind('inDl', 'allowDl', 'check');
+    bind('inC', 'cols', 'num'); bind('inM', 'colsPhone', 'num'); bind('inG', 'gap', 'num');
+    bind('inDim', 'dim', 'num'); bind('inBl', 'blur', 'num');
+
+    document.querySelectorAll('#segLayout button').forEach((b) =>
+      b.addEventListener('click', () => { S.layout = b.dataset.l; update(); }));
+
+    // ---------- background picker: every photo in the folder ----------
+    function renderBgPicker() {
+      const box = $('bgPicker');
+      box.innerHTML = '';
+      const add = (value, label, src) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.dataset.bg = value; b.title = label;
+        if (src) {
+          const img = document.createElement('img');
+          img.src = src; img.alt = label; img.loading = 'lazy'; img.decoding = 'async';
+          b.appendChild(img);
+        } else {
+          b.dataset.i18n = value === 'auto' ? 'bg.auto' : 'bg.none';
+          b.textContent = t(b.dataset.i18n);
+        }
+        b.addEventListener('click', () => { S.bg = value; update(); });
+        box.appendChild(b);
+      };
+      add('auto', '');
+      add('none', '');
+      S.photos.forEach((f) => add(f.id, f.name, thumb(f, 160)));    // no limit: all photos
+    }
+
+    // ---------- load a Drive folder ----------
+    async function loadFolder(keep) {
+      const id = extractFolderId($('inFolder').value);
+      errs.form = null;
+      if (!id) { errs.form = () => t('mk.badLink'); renderErrs(); return false; }
+
+      const btn = $('btnLoad');
+      btn.disabled = true; btn.textContent = t('mk.loading');
+      let files;
+      try {
+        const r = await admin('folder', { folder: id });
+        if (!Array.isArray(r.files)) throw notWorker();
+        files = r.files;
+      } catch (e) {
+        errs.form = errText(e); renderErrs();
+        return false;
+      } finally {
+        btn.disabled = false; btn.textContent = t('mk.load');
+      }
+      if (!files.length) { errs.form = () => t('mk.empty'); renderErrs(); return false; }
+
+      S.folderId = id; S.files = files; S.photos = files.filter((f) => !isVideo(f));
+      if (!keep) { S.bg = 'auto'; S.code = null; S.saved = ''; $('linksBox').hidden = true; errs.save = null; }
+      info = () => {
+        const v = S.files.length - S.photos.length;
+        const p = photosText(S.photos.length);
+        return v ? t('mk.found.v', { p, v: videosText(v) }) : t('mk.found', { p });
+      };
+      renderErrs(); renderInfo();
+      renderBgPicker();
+      $('options').hidden = false;
+      $('previewBox').hidden = false;
+      const frame = $('previewFrame');
+      if (!frame.getAttribute('src')) frame.src = location.pathname + '?preview=1';   // it says "ready" when loaded
+      else sendPreview(true);
+      update();
+      return true;
+    }
+    $('btnLoad').addEventListener('click', () => loadFolder(false));
+    $('inFolder').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadFolder(false); });
+    $('inFolder').addEventListener('paste', () => setTimeout(() => loadFolder(false), 50));
+
+    // ---------- save, and show the links ----------
+    function showLinks() {
+      const share = base() + '/g/' + S.code;
+      $('outLink').value = share;
+      $('btnOpenLink').href = share;
+      $('outDirect').value = location.origin + location.pathname + '?id=' + S.code;
+      $('linksBox').hidden = false;
+    }
+    async function save() {
+      if (!S.folderId || saving) return;
+      saving = true; errs.save = null; renderErrs(); update();
+      const settings = settingsFromS();
+      try {
+        const r = await admin('save', { code: S.code || undefined, settings, siteUrl: location.origin + location.pathname });
+        S.code = r.code; S.saved = JSON.stringify(settings);
+        showLinks();
+      } catch (e) {
+        const f = errText(e);
+        errs.save = () => t('mk.saveFail') + ' ' + f();
+      } finally {
+        saving = false; renderErrs(); update();
+      }
+    }
+    $('btnSave').addEventListener('click', save);
+
+    const wireCopy = (btnId, inputId, key) => {
+      $(btnId).addEventListener('click', async (e) => {
+        const b = e.currentTarget;
+        const ok = await copyText($(inputId).value);
+        b.textContent = t(ok ? 'res.copied' : 'res.ctrlc');
+        setTimeout(() => (b.textContent = t(key)), 2000);
+      });
+    };
+    wireCopy('btnCopyLink', 'outLink', 'res.copy');
+    wireCopy('btnCopyDirect', 'outDirect', 'res.copy');
+    $('outLink').addEventListener('focus', (e) => e.target.select());
+    $('outDirect').addEventListener('focus', (e) => e.target.select());
+
+    // ---------- My galleries ----------
+    function hideMine() { $('mineBox').hidden = true; $('formBox').hidden = false; errs.mine = null; renderErrs(); }
+    async function showMine() {
+      $('mineBox').hidden = false; $('formBox').hidden = true;
+      errs.mine = null; renderErrs();
+      try {
+        mineItems = (await admin('list')).items || [];
+      } catch (e) {
+        errs.mine = errText(e); renderErrs();
+        return;
+      }
+      renderMine();
+    }
+    function renderMine() {
+      const list = $('mineList');
+      list.innerHTML = '';
+      $('mineEmpty').hidden = mineItems.length > 0;
+      const locale = L.get() === 'th' ? 'th-TH' : 'en-GB';
+      mineItems.forEach((g) => {
+        const li = document.createElement('li');
+        const ti = document.createElement('div'); ti.className = 'm-title'; ti.textContent = g.t || t('mine.untitled');
+        const su = document.createElement('div'); su.className = 'm-sub';
+        su.textContent = [g.by, g.ts ? new Date(g.ts).toLocaleDateString(locale) : ''].filter(Boolean).join(' · ');
+        const row = document.createElement('div'); row.className = 'row tight';
+        const mk = (key, cls, fn) => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.className = 'btn small ' + cls; b.textContent = t(key);
+          b.addEventListener('click', () => fn(b));
+          row.appendChild(b);
+        };
+        mk('mine.edit', 'primary', () => editGallery(g.code));
+        mk('mine.copy', '', async (b) => {
+          const ok = await copyText(base() + '/g/' + g.code);
+          b.textContent = t(ok ? 'res.copied' : 'res.ctrlc');
+          setTimeout(() => (b.textContent = t('mine.copy')), 2000);
+        });
+        mk('mine.del', 'ghost', () => deleteGallery(g.code));
+        li.append(ti, su, row);
+        list.appendChild(li);
+      });
+    }
+    async function editGallery(c) {
+      errs.mine = null;
+      let s;
+      try { s = (await admin('get', { code: c })).settings; }
+      catch (e) { errs.mine = errText(e); renderErrs(); return; }
+      resetForm();
+      Object.assign(S, {
+        title: s.t || '', by: s.by || '', desc: s.d || '', showTitle: s.st !== false, showBy: s.sa !== false, allowDl: s.dl !== false,
+        layout: LAYOUTS.includes(s.l) ? s.l : D.layout, cols: clamp(s.c, D.cols, 1, 8), colsPhone: clamp(s.m, D.colsPhone, 1, 4), gap: clamp(s.g, D.gap, 0, 24),
+        bg: s.bg || 'auto', dim: clamp(s.dim, D.dim, 0, 90), blur: clamp(s.bl, D.blur, 0, 20),
+      });
+      $('inFolder').value = 'https://drive.google.com/drive/folders/' + s.f;
+      syncInputs();
+      hideMine();
+      if (!(await loadFolder(true))) return;
+      S.code = c; S.saved = JSON.stringify(settingsFromS());
+      showLinks(); update();
+    }
+    async function deleteGallery(c) {
+      if (!window.confirm(t('mine.confirm'))) return;
+      try { await admin('delete', { code: c }); }
+      catch (e) { errs.mine = errText(e); renderErrs(); return; }
+      if (S.code === c) resetForm();
+      showMine();
+    }
+    $('btnMine').addEventListener('click', showMine);
+    $('btnNew').addEventListener('click', () => { resetForm(); hideMine(); });
+
+    // When the language changes, redraw the texts the code made itself
+    adminRefresh = () => {
+      document.title = t('mk.title');
+      renderErrs(); renderInfo(); renderMine(); update();
+      if (!$('options').hidden) {
+        document.querySelectorAll('#bgPicker button[data-i18n]').forEach((b) => { b.textContent = t(b.dataset.i18n); });
+      }
+    };
+
+    // ---------- start ----------
+    resetForm();
+    showPin();
+    if (hasWorker()) {
+      let saved = null;
+      try { saved = sessionStorage.getItem('pin'); } catch (_) {}
+      if (saved) login(saved, true);                 // still signed in from earlier in this tab
+    }
+  }
+
   // ============================================================
   //  START
   // ============================================================
-  if (folderId) initGallery(); else initSetup();
+  L.onChange(() => { galleryRefresh(); adminRefresh(); });
+  if (code || rawId || legacyFolder || isPreview) initGallery(); else initAdmin();
 })();
