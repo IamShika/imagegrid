@@ -8,6 +8,7 @@
   --muted: #a3a3a3;
   --accent: #2f6fe0;       /* white text on this = 4.7:1 contrast */
   --accent-hover: #2560c8;
+  --accent-text: #6aa6ff;  /* blue for text on dark: 6.8:1 contrast */
   --heart: #ff4d6d;
 }
 
@@ -53,10 +54,29 @@ body.noscroll { overflow: hidden; }
   min-width: 0; margin-right: 10px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.bar-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* ENG | TH switch. The chosen language is blue. */
+.lang { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; }
+.lang button {
+  padding: 6px 2px; border: 0; background: none; cursor: pointer;
+  font: inherit; color: var(--muted);
+}
+.lang button:hover { color: var(--text); }
+.lang button.on { color: var(--accent-text); }
+.lang .sep { color: #5a5a5a; font-weight: 400; }
+
+/* On a phone the top bar is tight: hide the studio name and show icons only */
 @media (max-width: 520px) {
+  .topbar { padding: 0 10px; }
+  .bar-right { gap: 8px; width: 100%; justify-content: flex-end; }
   .actions { gap: 6px; }
   .pill { padding: 0 10px; font-size: 12px; }
+  .topbar.has-actions .brand { display: none; }
+  .topbar.has-actions .bar-right { justify-content: space-between; }
+  .pill .lbl { display: none; }
+  #btnFavFilter, #btnDownloadAll { padding: 0 11px; }
 }
 
 .pill {
@@ -208,7 +228,7 @@ body.noscroll { overflow: hidden; }
 
 .bg-picker {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px;
-  max-height: 210px; overflow: auto; padding: 3px;
+  max-height: 320px; overflow: auto; padding: 3px;     /* scrolls, so every photo can be shown */
 }
 .bg-picker button {
   aspect-ratio: 1; padding: 0; overflow: hidden; cursor: pointer;
@@ -243,6 +263,31 @@ body.noscroll { overflow: hidden; }
 .btn.primary { background: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent-hover); }
 .btn.ghost { background: transparent; border: 1px solid var(--line); }
+.btn.small { padding: 7px 12px; font-size: 13px; }
+.btn.wide { width: 100%; }
+.row.tight { margin-top: 0; }
+
+/* ---------- PIN screen ---------- */
+.pin-box { max-width: 380px; margin: 60px auto 0; }
+.pin-box h1 { margin: 0 0 6px; font-size: 28px; }
+.pin-box input {
+  width: 100%; margin: 14px 0; padding: 12px 14px; letter-spacing: 4px; text-align: center;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 20px;
+}
+.pin-box input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+/* ---------- Gallery maker header + "My galleries" ---------- */
+.maker-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.maker-head h1 { margin: 0; }
+.mine-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; }
+.mine-list li { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.mine-list .m-title { font-weight: 700; overflow-wrap: anywhere; }
+.mine-list .m-sub { font-size: 12px; color: var(--muted); margin: 2px 0 10px; }
+.direct { margin-top: 14px; font-size: 13px; color: var(--muted); }
+.direct summary { cursor: pointer; }
+.direct input { width: 100%; margin-top: 10px; padding: 10px 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 13px; }
+#saveMsg { margin-top: 12px; }
 
 /* ---------- Contact footer ---------- */
 .contact { text-align: center; padding: 10px 16px 90px; }
