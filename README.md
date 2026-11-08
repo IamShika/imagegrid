@@ -1,106 +1,130 @@
 # [Drive Gallery](https://iamshika.github.io/imagegrid/)
 
-A simple website that shows the photos and videos from a Google Drive folder in a dark grid (like Adobe Lightroom's share pages). Your files stay in Google Drive, so there is nothing else to pay for.
+A website that shows the photos and videos from a Google Drive folder in a dark grid (like Adobe Lightroom's share pages). Your files stay in Google Drive, so there is nothing else to pay for.
 
 **Where each piece lives**
 
 | Piece | Where | Secret? |
 |---|---|---|
-| The website (`index.html`, `style.css`, `app.js`, `config.js`) | GitHub Pages (public) | No secrets in these files |
-| `worker.js` + your Google API key | Cloudflare Workers | The key is stored as a **secret** inside Cloudflare. It is never in any file and never on GitHub |
+| The website: `index.html`, `style.css`, `lang.js`, `app.js`, `config.js` | GitHub Pages (public) | No secrets in these files |
+| `worker.js`, your Google API key, your PIN, your saved galleries | Cloudflare (Worker + KV) | Key and PIN are stored as **secrets** inside Cloudflare, never in a file |
 
 **What your customer can do**
-- See all photos in a grid and click one to view it big (arrow keys or swipe to flip through)
-- Tap the ♡ on the photos they like
-- Press **Send my picks** to copy the list of file names (or email it to you)
-- Download any photo, play videos, or tap **Download all** (opens the Drive folder, where Drive makes one zip of everything)
-- Contact you on Instagram, LINE or email (you choose which ones in `config.js`)
+- See all photos in a grid (or Square / Column / One-up), click one to view it big, flip with arrow keys or swipe
+- Tap the ♡ on the photos they like, then press **Send my picks** to copy the list or open your Instagram, LINE or email
+- Download photos, or tap **Download all**
+- Switch between **ENG | TH** (Thai is shown first for Thai visitors)
 
-Everything is free: Google Drive API, Cloudflare Workers (free plan: 100,000 requests a day) and GitHub Pages.
+**What you can do** (in the gallery maker, protected by your PIN)
+- Choose the layout, photos per row (computer and phone separately), spacing, background picture (any photo in the folder), darkness and blur
+- Get a short link that shows a picture banner when pasted into LINE
+- See all your galleries, edit them (the link stays the same), or delete them
+
+Everything is free: Google Drive API, Cloudflare Workers (100,000 requests a day), Cloudflare KV, and GitHub Pages.
 
 ---
 
-## Step 1 — Get a free Google API key (one time, ~5 minutes)
+## Step 1 — Get a free Google API key (one time)
 
-1. Go to https://console.cloud.google.com and sign in with your Google account.
-2. Click the project picker at the top → **New Project** → give it any name (e.g. `gallery`) → **Create**.
-3. In the search bar at the top, type **Google Drive API** → open it → click **Enable**.
-4. Go to **APIs & Services → Credentials → Create credentials → API key**.
-5. Copy the key and keep it somewhere private for the next step. Then click **Edit API key** and set:
-   - **API restrictions → Restrict key → Google Drive API** (so the key can do nothing else)
-   - **Application restrictions → None**. Do **not** pick "Websites (HTTP referrers)" this time. Google would block your Worker, because the Worker is not a website.
+1. Go to https://console.cloud.google.com and sign in.
+2. Project picker at the top → **New Project** → any name → **Create**.
+3. Search **Google Drive API** → open it → **Enable**.
+4. **APIs & Services → Credentials → Create credentials → API key**.
+5. Copy the key (keep it private). Click **Edit API key** and set:
+   - **API restrictions → Restrict key → Google Drive API**
+   - **Application restrictions → None** (a "Websites" restriction would block your Worker)
 
-> Never paste this key into any file or into GitHub. It only goes into Cloudflare in Step 2.
-> If you ever put a real key in a GitHub file by mistake, go back to Credentials, delete that key, and create a new one.
+> Never paste this key into any file or into GitHub. It only goes into Cloudflare (Step 2).
+> If a real key ever ends up in a GitHub file, delete it in Google Cloud and make a new one.
 
-## Step 2 — Set up the Cloudflare Worker (one time, ~10 minutes)
+## Step 2 — Set up Cloudflare (one time)
 
-1. Make a free account at https://dash.cloudflare.com (no credit card needed).
-2. In the left menu open **Workers & Pages** → **Create** → **Create Worker**. Name it `gallery-api` and click **Deploy**.
-3. Click **Edit code**. Delete everything in the editor, open `worker.js` from this project, copy **all** of it and paste it in. Click **Deploy**.
-4. Go back to the Worker's page → **Settings** → **Variables and Secrets** → **Add**:
-   - Type: **Secret**, Name: `GOOGLE_API_KEY`, Value: *your Google API key from Step 1* → **Deploy**
-   - Type: **Text**, Name: `ALLOWED_ORIGINS`, Value: `https://YOURNAME.github.io` → **Deploy**
-     (your GitHub username, with no `/` at the end and no repo name. This makes the Worker accept only your website. If you use your own domain, put both separated by a comma.)
-5. Copy your Worker address. It looks like `https://gallery-api.YOURNAME.workers.dev`.
-6. Quick test: open this in your browser (put a real folder ID from a shared Drive folder):
-   `https://gallery-api.YOURNAME.workers.dev/?folder=PASTE_FOLDER_ID`
-   You should see text starting with `{"files":[`. An empty `{"files":[]}` means the folder has no photos or videos directly inside it.
+1. Free account at https://dash.cloudflare.com.
+2. **Workers & Pages → Create → Create Worker** → choose the **Hello World** starter → name it (e.g. `gallery-proxy`) → **Deploy**.
+   Only `worker.js` goes here. Do **not** upload your website files to Cloudflare.
+   *(If you already have the Worker from before, just open it and replace its code with the new `worker.js`.)*
+3. **Edit code** → delete everything → paste all of `worker.js` → **Deploy**.
+4. **Make the storage for your galleries (KV):**
+   - Left menu → **Storage & Databases → KV → Create a namespace** → name it `gallery-data`.
+   - Go back to your Worker → **Settings → Bindings → Add → KV namespace** → Variable name: `GALLERIES` → pick `gallery-data` → **Deploy**.
+5. **Settings → Variables and Secrets → Add** (click **Deploy** after):
+   - **Secret** named `GOOGLE_API_KEY` = your key from Step 1
+   - **Secret** named `PIN` = your numbers, e.g. `482913` (**6 or more digits** is safer)
+   - **Text** named `ALLOWED_ORIGINS` = `https://YOURNAME.github.io` (no `/` at the end, no repo name)
+6. Copy your Worker address (`https://gallery-proxy.YOURNAME.workers.dev`).
+7. Quick test: open `https://gallery-proxy.YOURNAME.workers.dev/?id=test1234`. You should see `{"error":{"status":404,"reason":"galleryNotFound"}}`. That means the Worker is alive and the storage is connected.
 
-The menu names in Cloudflare change from time to time, so they may look a little different, but the steps are the same.
+The names in Cloudflare's menus change from time to time, so they may look a little different. The steps are the same.
 
 ## Step 3 — Put the website on GitHub
 
-1. Open `config.js` and paste your Worker address between the quotes:
-   ```js
-   WORKER_URL: "https://gallery-api.YOURNAME.workers.dev",
-   ```
-   In the same file, fill in `CONTACT_INSTAGRAM`, `CONTACT_LINE` and `CONTACT_EMAIL` (leave any you don't use as `""`). Set `SHOW_DOWNLOAD_ALL: false` if you don't want the **Download all** button.
-2. Create a GitHub account if you don't have one, then **New repository**. Name it e.g. `gallery`, set it to **Public**, click **Create**.
-3. Click **uploading an existing file**, drag in `index.html`, `style.css`, `app.js`, `config.js` and `README.md`, then **Commit changes**. You don't need to upload `worker.js`, because it lives in Cloudflare now.
-4. Go to **Settings → Pages**. Under **Branch**, choose `main` and `/ (root)`, then **Save**.
-5. After about a minute your site is live at `https://YOURNAME.github.io/gallery/`.
+1. Open `config.js` and check `WORKER_URL` is your Worker address. Fill in your studio name, Instagram, LINE and email.
+2. Create a **Public** repository (e.g. `gallery`).
+3. Upload `index.html`, `style.css`, `lang.js`, `app.js`, `config.js`, `README.md`, then **Commit changes**. Do not upload `worker.js`.
+4. **Settings → Pages → Branch: `main` / `(root)` → Save.**
+5. After a minute your site is live at `https://YOURNAME.github.io/gallery/`.
 
 ## Step 4 — Share the Drive folder
 
-1. In Google Drive, right-click the customer's photo folder → **Share**.
-2. Under **General access**, choose **Anyone with the link** → **Viewer**.
-3. Click **Copy link**.
+Right-click the customer's folder → **Share** → **General access: Anyone with the link → Viewer**. Share each customer's folder on its own, not the big folder that holds all of them.
 
-Share each customer's folder on its own, not the big folder that holds all of them. Sharing the big one shares everything inside it.
+## Step 5 — Make a gallery
 
-## Step 5 — Make a gallery for each customer
-
-1. Open your website (`https://YOURNAME.github.io/gallery/`).
-2. Type a title (e.g. *Graduation Day*), your studio name, and paste the Drive folder link.
-3. Click **Create gallery link**, copy the link, and send it to your customer. Each folder gets its own link.
+1. Open your website. Enter your **PIN**.
+2. Paste the Drive folder link. The folder loads and a live preview appears (switch **Computer / Phone**).
+3. Choose the look, then press **Save & get link**.
+4. Send the **share link** (`…workers.dev/g/xxxxxxxx`) to your customer. In LINE it shows a banner with your chosen background picture, the title and your preview text.
+5. Later: **My galleries** lets you **Edit** (same link, new look), **Copy link** or **Delete** (the link stops working).
 
 ---
 
+## Languages
+
+- Visitors see **Thai** if their phone or computer language is Thai, or if they are in Thailand. Everyone else sees **English**.
+- The **ENG | TH** switch in the top bar changes it, and the choice is remembered on that device.
+- Every text is in `lang.js`. To fix a translation, change the text inside the quotes and upload the file again.
+
+## About the LINE banner
+
+- LINE reads the share link (`/g/…`) and draws a card: your background picture as the banner, the title as "title by studio", and your preview text.
+- The banner is the background picture you chose ("First photo" if you chose none).
+- LINE **remembers** previews. If you change the picture later, chats that already received the link may still show the old banner.
+- The link's domain is your `workers.dev` address.
+
 ## How safe is this?
 
-- Your Google API key is only inside Cloudflare. Nobody can read it from GitHub or from your website.
-- The Worker address is public (your website has to know it). Someone who finds it could ask it to list a Drive folder, but only a folder that is already shared as "Anyone with the link" and only if they know its long folder ID. They can never get your key.
-- `ALLOWED_ORIGINS` stops other *websites* from using your Worker in a browser. It is not a lock against someone using a script, so don't rely on it for secrets. That's fine here, because nothing secret goes through the Worker.
-- Anyone who has a customer's gallery link can see those photos. Don't post the link publicly if the photos are private.
+- Your Google API key and PIN are only inside Cloudflare.
+- Only someone with your PIN can make, change or delete galleries. After 5 wrong PINs from one place, sign-in pauses for 15 minutes. A longer PIN is safer.
+- Changing the PIN later does **not** break your customers' links.
+- A customer's link only opens that one gallery. The codes are random, so they can't be guessed.
+- Anyone who has a gallery link can see its photos. Don't post private links publicly.
+- If you tick off download buttons, the buttons are hidden and the Drive folder address is not sent to the page, but the photos' own addresses still work.
+- If you ever make a new Google key, just update the `GOOGLE_API_KEY` secret. Your links keep working.
 
 ## Good to know
 
-- **Sub-folders** are not shown. Put all photos and videos directly in the customer's folder.
-- **Videos** play in Google's own video player. Newly uploaded videos may take a few minutes to be ready in Drive.
-- **Favorites** are saved on the customer's own device and browser, so they won't be there on another device.
-- **New photos** you add to the folder can take up to about 5 minutes to appear, because the Worker remembers the list for a short time.
-- **Very popular files:** Google can temporarily limit downloads of a file if many people download it in a short time. Viewing is not affected.
-- **Make the photos bigger or smaller:** in `style.css`, change `--row-h` at the top.
+- **Old links** (the long ones with `?f=…`) stop working once your Worker has a PIN. Make new links in the gallery maker. To keep old links alive for a while, add a **Text** variable `LEGACY_OPEN` = `1` in Cloudflare, then delete it when you're done.
+- **Sub-folders** are not shown. Use one folder per gallery.
+- **Videos** play in Google's own player.
+- **Favorites** are saved on the customer's own device.
+- **New photos** you add to the folder can take up to about 5 minutes to appear. In the gallery maker, **Load folder** always gets the latest list.
+- **Starting look:** the `DEFAULTS` block in `config.js` sets what the gallery maker starts with.
+- **Your config:** `config.js` is the only file with your own details. When you get updated files, keep your `config.js`.
 
 ## If something goes wrong
 
 | What you see | What to do |
 |---|---|
-| "Not set up yet" | Paste your Worker address into `config.js` (Step 3) and upload the file again |
-| "Couldn't reach the gallery server" | The `WORKER_URL` in `config.js` is wrong, or the Worker isn't deployed. Do the quick test in Step 2 |
-| "This website isn't allowed" | `ALLOWED_ORIGINS` in Cloudflare doesn't match your site address exactly (check for a typo, a trailing `/`, or `http` instead of `https`) |
-| "The gallery server isn't set up correctly" | The secret `GOOGLE_API_KEY` is missing or wrong in Cloudflare (Step 2, part 4), or the key still has an "HTTP referrers" restriction (Step 1, part 5) |
-| "Drive API is not turned on" | Enable **Google Drive API** in your Google Cloud project (Step 1, part 3) |
-| "Folder not found" / "This folder is private" | Share the folder as **Anyone with the link → Viewer** (Step 4) |
-| Photos don't appear but no error | Press Ctrl+F5 to refresh; check the folder directly contains images |
+| "Not set up yet" | Paste your Worker address into `config.js` (Step 3) and upload it again |
+| "Couldn't reach the gallery server" | `WORKER_URL` is wrong, or the Worker isn't deployed. Do the quick test in Step 2 |
+| "That address isn't your Worker" | `WORKER_URL` points to something that isn't running `worker.js` |
+| "This website isn't allowed" | `ALLOWED_ORIGINS` doesn't match your site address exactly (typo, trailing `/`, or `http` instead of `https`) |
+| "The PIN is not set in Cloudflare yet" | Add the secret `PIN` (Step 2, part 5) and Deploy |
+| "The gallery storage (KV) is not connected" | Bind the KV namespace as `GALLERIES` (Step 2, part 4) and Deploy |
+| "Too many wrong tries" | Wait 15 minutes, then sign in again |
+| "The gallery server isn't set up correctly" | The `GOOGLE_API_KEY` secret is missing or wrong, or the key still has a "Websites" restriction |
+| "Drive API is not turned on" | Enable **Google Drive API** in your Google Cloud project |
+| "Folder not found" / "This folder is private" | Share the folder as **Anyone with the link → Viewer** |
+| "This link is outdated" | It's an old long link. Make a new one in the gallery maker |
+| "Gallery not found" | The code is wrong, or the gallery was deleted |
+| LINE shows no banner picture | Open `https://YOUR-WORKER/img/CODE` in a browser. If it shows the picture, LINE may have cached an old preview. If not, tell me what you see |
