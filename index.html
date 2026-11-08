@@ -12,91 +12,142 @@
   <div id="bgLayer" class="bg-layer" hidden><div id="bgImg" class="bg-img"></div></div>
 
   <!-- Top bar -->
-  <header class="topbar">
+  <header class="topbar" id="topbar">
     <div class="brand" id="brand">Gallery</div>
-    <div class="actions" id="actions" hidden>
-      <button id="btnFavFilter" class="pill" type="button">
-        <svg viewBox="0 0 24 24" width="16" height="16" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>
-        Favorites <span id="favCount">0</span>
-      </button>
-      <button id="btnDownloadAll" class="pill" type="button">Download all</button>
-      <button id="btnSend" class="pill primary" type="button">Send my picks</button>
+    <div class="bar-right">
+      <div class="actions" id="actions" hidden>
+        <button id="btnFavFilter" class="pill" type="button" data-i18n-aria="fav" aria-label="Favorites">
+          <svg viewBox="0 0 24 24" width="16" height="16" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>
+          <span class="lbl" data-i18n="fav">Favorites</span> <span id="favCount">0</span>
+        </button>
+        <button id="btnDownloadAll" class="pill" type="button" data-i18n-aria="dlAll" data-i18n-title="dlAll" aria-label="Download all">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="lbl" data-i18n="dlAll">Download all</span>
+        </button>
+        <button id="btnSend" class="pill primary" type="button" data-i18n="send">Send my picks</button>
+      </div>
+      <div class="lang" id="langSwitch" role="group" data-i18n-aria="lang.aria" aria-label="Language">
+        <button type="button" data-lang="en">ENG</button><span class="sep" aria-hidden="true">|</span><button type="button" data-lang="th">TH</button>
+      </div>
     </div>
   </header>
 
   <main>
-    <!-- ============ ADMIN PANEL (shown when the page is opened without a folder) ============ -->
+    <!-- ============ GALLERY MAKER (shown when the page is opened without a gallery) ============ -->
     <section id="setup" class="setup" hidden>
-      <div class="setup-grid">
+
+      <!-- PIN screen -->
+      <div id="pinBox" class="pin-box" hidden>
+        <h1 data-i18n="pin.title">Sign in</h1>
+        <p class="muted" data-i18n="pin.intro">Enter your PIN to open the gallery maker.</p>
+        <p id="keyWarning" class="warn" hidden data-i18n="warn.worker">You haven't connected your Cloudflare Worker yet.</p>
+        <input id="inPin" type="password" inputmode="numeric" autocomplete="current-password" data-i18n-ph="pin.ph" placeholder="PIN">
+        <p id="pinError" class="warn" hidden></p>
+        <button id="btnLogin" class="btn primary wide" type="button" data-i18n="pin.go">Sign in</button>
+      </div>
+
+      <!-- The maker -->
+      <div id="makerBox" class="setup-grid" hidden>
 
         <div class="controls">
-          <h1>Gallery maker</h1>
-          <p class="muted">Paste a Google Drive folder, choose how the gallery looks, then copy the link for your customer.</p>
-
-          <p id="keyWarning" class="warn" hidden>
-            You haven't connected your Cloudflare Worker yet. Open <code>config.js</code> and paste your Worker address (see README.md, Step 2).
-          </p>
-
-          <label class="block">Google Drive folder link
-            <input id="inFolder" type="text" placeholder="https://drive.google.com/drive/folders/...">
-          </label>
-          <p class="hint">The folder must be shared as <b>Anyone with the link → Viewer</b>.</p>
-          <button id="btnLoad" class="btn primary" type="button">Load folder</button>
-          <p id="setupError" class="warn" hidden></p>
-          <p id="loadInfo" class="muted small" hidden></p>
-
-          <div id="options" class="options" hidden>
-
-            <div class="group">
-              <label class="check"><input type="checkbox" id="inShowTitle" checked> Show title</label>
-              <input id="inTitle" type="text" placeholder="e.g. Graduation Day">
-              <label class="check"><input type="checkbox" id="inShowBy" checked> Show studio name</label>
-              <input id="inBy" type="text" placeholder="e.g. Miracle Studio">
+          <div class="maker-head">
+            <h1 data-i18n="mk.title">Gallery maker</h1>
+            <div class="row tight">
+              <button id="btnMine" class="btn small" type="button" data-i18n="mine">My galleries</button>
+              <button id="btnLogout" class="btn small ghost" type="button" data-i18n="pin.out">Sign out</button>
             </div>
+          </div>
 
-            <div class="group">
-              <div class="group-title">Layout</div>
-              <div class="seg" id="segLayout">
-                <button type="button" data-l="grid">Photo Grid</button>
-                <button type="button" data-l="square">Square</button>
-                <button type="button" data-l="column">Column</button>
-                <button type="button" data-l="oneup">One-up</button>
+          <!-- My galleries -->
+          <div id="mineBox" hidden>
+            <div class="row tight"><button id="btnNew" class="btn primary small" type="button" data-i18n="mine.new">New gallery</button></div>
+            <p id="mineEmpty" class="muted small" hidden data-i18n="mine.empty">No galleries yet.</p>
+            <ul id="mineList" class="mine-list"></ul>
+          </div>
+
+          <!-- New / edit gallery -->
+          <div id="formBox">
+            <p class="muted" data-i18n="mk.intro">Paste a Google Drive folder, choose how the gallery looks, then save to get a link for your customer.</p>
+
+            <label class="block"><span data-i18n="mk.folder">Google Drive folder link</span>
+              <input id="inFolder" type="text" placeholder="https://drive.google.com/drive/folders/...">
+            </label>
+            <p class="hint" data-i18n-html="mk.hint">The folder must be shared as <b>Anyone with the link → Viewer</b>.</p>
+            <button id="btnLoad" class="btn primary" type="button" data-i18n="mk.load">Load folder</button>
+            <p id="setupError" class="warn" hidden></p>
+            <p id="loadInfo" class="muted small" hidden></p>
+
+            <div id="options" class="options" hidden>
+
+              <div class="group">
+                <label class="check"><input type="checkbox" id="inShowTitle" checked> <span data-i18n="mk.showTitle">Show title</span></label>
+                <input id="inTitle" type="text" maxlength="80" data-i18n-ph="mk.titlePh" placeholder="e.g. Graduation Day">
+                <label class="check"><input type="checkbox" id="inShowBy" checked> <span data-i18n="mk.showBy">Show studio name</span></label>
+                <input id="inBy" type="text" maxlength="60" data-i18n-ph="mk.byPh" placeholder="e.g. Miracle Studio">
               </div>
-              <p class="hint" id="layoutHint"></p>
-              <label class="range" id="rowC">Photos per row on a computer <b id="vC"></b>
-                <input id="inC" type="range" min="2" max="8" step="1">
-              </label>
-              <label class="range" id="rowM">Photos per row on a phone <b id="vM"></b>
-                <input id="inM" type="range" min="1" max="4" step="1">
-              </label>
-              <label class="range">Space between photos <b id="vG"></b>
-                <input id="inG" type="range" min="0" max="24" step="1">
-              </label>
-            </div>
 
-            <div class="group">
-              <div class="group-title">Background picture</div>
-              <p class="hint">Pick a photo from the folder to fill the whole page behind the gallery.</p>
-              <div id="bgPicker" class="bg-picker"></div>
-              <label class="range">Darkness <b id="vDim"></b>
-                <input id="inDim" type="range" min="0" max="90" step="5">
-              </label>
-              <label class="range">Blur <b id="vBl"></b>
-                <input id="inBl" type="range" min="0" max="20" step="1">
-              </label>
-            </div>
+              <div class="group">
+                <div class="group-title" data-i18n="mk.layout">Layout</div>
+                <div class="seg" id="segLayout">
+                  <button type="button" data-l="grid" data-i18n="layout.grid">Photo Grid</button>
+                  <button type="button" data-l="square" data-i18n="layout.square">Square</button>
+                  <button type="button" data-l="column" data-i18n="layout.column">Column</button>
+                  <button type="button" data-l="oneup" data-i18n="layout.oneup">One-up</button>
+                </div>
+                <p class="hint" id="layoutHint"></p>
+                <label class="range" id="rowC"><span data-i18n="mk.colsC">Photos per row on a computer</span> <b id="vC"></b>
+                  <input id="inC" type="range" min="2" max="8" step="1">
+                </label>
+                <label class="range" id="rowM"><span data-i18n="mk.colsM">Photos per row on a phone</span> <b id="vM"></b>
+                  <input id="inM" type="range" min="1" max="4" step="1">
+                </label>
+                <label class="range"><span data-i18n="mk.gap">Space between photos</span> <b id="vG"></b>
+                  <input id="inG" type="range" min="0" max="24" step="1">
+                </label>
+              </div>
 
-            <div class="group">
-              <label class="check"><input type="checkbox" id="inDl" checked> Show download buttons</label>
-              <p class="hint">Unticking this only hides the buttons. Anyone who has the Drive folder link can still download from Drive.</p>
-            </div>
+              <div class="group">
+                <div class="group-title" data-i18n="mk.bg">Background picture</div>
+                <p class="hint" id="bgHint"></p>
+                <div id="bgPicker" class="bg-picker"></div>
+                <label class="range"><span data-i18n="mk.dim">Darkness</span> <b id="vDim"></b>
+                  <input id="inDim" type="range" min="0" max="90" step="5">
+                </label>
+                <label class="range"><span data-i18n="mk.blur">Blur</span> <b id="vBl"></b>
+                  <input id="inBl" type="range" min="0" max="20" step="1">
+                </label>
+              </div>
 
-            <div class="result">
-              <p class="muted">Send this link to your customer:</p>
-              <input id="outLink" type="text" readonly>
-              <div class="row">
-                <button id="btnCopyLink" class="btn primary" type="button">Copy link</button>
-                <a id="btnOpenLink" class="btn" target="_blank" rel="noopener">Open gallery</a>
+              <div class="group">
+                <label class="check"><input type="checkbox" id="inDl" checked> <span data-i18n="mk.dl">Show download buttons</span></label>
+                <p class="hint" data-i18n="mk.dlHint">Unticking this only hides the buttons.</p>
+              </div>
+
+              <div class="group">
+                <div class="group-title" data-i18n="mk.desc">Link preview text</div>
+                <input id="inDesc" type="text" maxlength="140" data-i18n-ph="mk.descPh" placeholder="e.g. Pick your favorite photos here">
+                <p class="hint" data-i18n="mk.descHint">The small text under the title when the link is shared in LINE and other chats.</p>
+              </div>
+
+              <div class="result">
+                <button id="btnSave" class="btn primary wide" type="button" data-i18n="mk.save">Save &amp; get link</button>
+                <p id="saveMsg" class="warn" hidden></p>
+                <p id="unsavedMsg" class="hint" hidden data-i18n="mk.unsaved">You changed something.</p>
+
+                <div id="linksBox" hidden>
+                  <p class="muted" data-i18n="res.share">Send this link to your customer.</p>
+                  <input id="outLink" type="text" readonly>
+                  <div class="row">
+                    <button id="btnCopyLink" class="btn primary" type="button" data-i18n="res.copy">Copy link</button>
+                    <a id="btnOpenLink" class="btn" target="_blank" rel="noopener" data-i18n="res.open">Open gallery</a>
+                  </div>
+                  <p class="hint" data-i18n="res.cache">LINE remembers link previews.</p>
+                  <details class="direct">
+                    <summary data-i18n="res.direct">Direct link (no picture banner)</summary>
+                    <input id="outDirect" type="text" readonly>
+                    <div class="row"><button id="btnCopyDirect" class="btn small" type="button" data-i18n="res.copy">Copy link</button></div>
+                  </details>
+                </div>
               </div>
             </div>
           </div>
@@ -104,10 +155,10 @@
 
         <div class="preview" id="previewBox" hidden>
           <div class="preview-bar">
-            <span class="muted">Preview</span>
+            <span class="muted" data-i18n="prev">Preview</span>
             <div class="seg small" id="segDevice">
-              <button type="button" data-dev="desktop" class="on">Computer</button>
-              <button type="button" data-dev="phone">Phone</button>
+              <button type="button" data-dev="desktop" class="on" data-i18n="dev.desktop">Computer</button>
+              <button type="button" data-dev="phone" data-i18n="dev.phone">Phone</button>
             </div>
           </div>
           <div class="frame-wrap" id="frameWrap">
@@ -142,26 +193,26 @@
   <div id="lightbox" class="lightbox" hidden>
     <div class="lb-top">
       <div class="lb-left">
-        <button id="lbClose" class="icon-btn" type="button" aria-label="Back">
+        <button id="lbClose" class="icon-btn" type="button" data-i18n-aria="lb.back" aria-label="Back">
           <svg viewBox="0 0 24 24" width="20" height="20"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <span id="lbCounter" class="lb-counter"></span>
       </div>
       <div class="lb-right">
-        <button id="lbFav" class="icon-btn" type="button" aria-label="Favorite">
+        <button id="lbFav" class="icon-btn" type="button" data-i18n-aria="lb.fav" aria-label="Favorite">
           <svg viewBox="0 0 24 24" width="22" height="22" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>
         </button>
-        <a id="lbDownload" class="icon-btn" target="_blank" rel="noopener" aria-label="Download">
+        <a id="lbDownload" class="icon-btn" target="_blank" rel="noopener" data-i18n-aria="lb.dl" aria-label="Download">
           <svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </a>
       </div>
     </div>
 
-    <button id="lbPrev" class="nav-btn prev" type="button" aria-label="Previous">
+    <button id="lbPrev" class="nav-btn prev" type="button" data-i18n-aria="lb.prev" aria-label="Previous">
       <svg viewBox="0 0 24 24" width="22" height="22"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
     <div id="lbStage" class="lb-stage"></div>
-    <button id="lbNext" class="nav-btn next" type="button" aria-label="Next">
+    <button id="lbNext" class="nav-btn next" type="button" data-i18n-aria="lb.next" aria-label="Next">
       <svg viewBox="0 0 24 24" width="22" height="22"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
   </div>
@@ -169,15 +220,15 @@
   <!-- SEND MY PICKS (popup) -->
   <div id="sendModal" class="modal" hidden>
     <div class="modal-box">
-      <h2>Your favorite photos</h2>
+      <h2 data-i18n="send.title">Your favorite photos</h2>
       <p class="muted" id="sendInfo"></p>
       <textarea id="sendText" readonly rows="8"></textarea>
       <div class="row">
-        <button id="btnCopyList" class="btn primary" type="button">Copy list</button>
-        <button id="btnDownloadList" class="btn" type="button">Download .txt</button>
-        <button id="btnCloseSend" class="btn ghost" type="button">Close</button>
+        <button id="btnCopyList" class="btn primary" type="button" data-i18n="send.copy">Copy list</button>
+        <button id="btnDownloadList" class="btn" type="button" data-i18n="send.txt">Download .txt</button>
+        <button id="btnCloseSend" class="btn ghost" type="button" data-i18n="close">Close</button>
       </div>
-      <p class="muted small" id="sendContactHint" hidden>Now send the list to your photographer. For Instagram and LINE, your list is copied first, so just paste it into the chat.</p>
+      <p class="muted small" id="sendContactHint" hidden data-i18n="send.hint">Now send the list to your photographer.</p>
       <div class="row" id="sendContacts"></div>
     </div>
   </div>
@@ -185,16 +236,17 @@
   <!-- DOWNLOAD ALL (popup) -->
   <div id="dlModal" class="modal" hidden>
     <div class="modal-box">
-      <h2>Download all photos</h2>
-      <p class="muted">Google Drive opens in a new tab. There, click the folder name at the top and choose <b>Download</b>. Drive packs everything into a zip file for you. Big folders come as several zip files.</p>
+      <h2 data-i18n="dl.title">Download all photos</h2>
+      <p class="muted" data-i18n-html="dl.body">Google Drive opens in a new tab.</p>
       <div class="row">
-        <a id="btnOpenDrive" class="btn primary" target="_blank" rel="noopener">Open Google Drive</a>
-        <button id="btnCloseDl" class="btn ghost" type="button">Close</button>
+        <a id="btnOpenDrive" class="btn primary" target="_blank" rel="noopener" data-i18n="dl.open">Open Google Drive</a>
+        <button id="btnCloseDl" class="btn ghost" type="button" data-i18n="close">Close</button>
       </div>
     </div>
   </div>
 
   <script src="config.js"></script>
+  <script src="lang.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
