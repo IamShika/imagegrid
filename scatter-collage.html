@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Scatter Collage</title>
+
+<style>
+  /* ---------- Basic page look ---------- */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d12;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #e8eaf0; }
+
+  /* The big canvas that shows the collage fills the whole window */
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  body.selecting #view { cursor: crosshair; }
+
+  /* The rectangle you drag when using "Capture area" */
+  #selBox { position: fixed; border: 2px dashed #fff; background: rgba(255,255,255,.08);
+    box-shadow: 0 0 0 9999px rgba(0,0,0,.55); pointer-events: none; z-index: 5; }
+
+  /* Small status text, bottom-left */
+  #hud { position: fixed; left: 12px; bottom: 12px; padding: 6px 12px; border-radius: 999px;
+    background: rgba(18,20,28,.85); font-size: 13px; z-index: 6; max-width: calc(100% - 24px); }
+  #hud:empty { display: none; }
+
+  /* ---------- Settings panel ---------- */
+  #panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: 310px; overflow-y: auto;
+    padding: 14px 16px; border-radius: 16px; background: rgba(18,20,28,.93);
+    backdrop-filter: blur(10px); z-index: 10; box-shadow: 0 8px 30px rgba(0,0,0,.45); }
+  #panel.closed { display: none; }
+  #menuBtn { position: fixed; top: 12px; right: 12px; z-index: 11; display: none; }
+  #panel:not(.closed) ~ #menuBtn { display: none; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #8b92a6; margin: 18px 0 8px; }
+  label { display: block; font-size: 13px; margin-bottom: 4px; }
+  label b { float: right; font-weight: 500; color: #9fb4ff; }
+  input[type=text], input[type=password], select { width: 100%; padding: 9px 10px; border-radius: 9px; border: 1px solid #2c3142;
+    background: #0f1118; color: inherit; font-size: 14px; }
+  input[type=range] { width: 100%; accent-color: #7c9cff; margin: 0 0 10px; }
+  input[type=color] { width: 44px; height: 30px; border: 0; background: none; padding: 0; }
+  .check { display: flex; gap: 8px; align-items: center; margin: 10px 0 0; cursor: pointer; }
+  .check small { color: #8b92a6; }
+  .row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  button, .btn { padding: 10px 12px; border-radius: 9px; border: 1px solid #2c3142; background: #1a1e2b;
+    color: inherit; font-size: 14px; cursor: pointer; text-align: center; text-decoration: none; display: inline-block; }
+  button:hover, .btn:hover { background: #232839; }
+  button.primary, .btn.primary { background: #4f6df5; border-color: #4f6df5; }
+  button.primary:hover, .btn.primary:hover { background: #5f7cff; }
+  button.active { background: #c0392b; border-color: #c0392b; }
+  .bar { height: 6px; border-radius: 3px; background: #1a1e2b; margin-top: 10px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: #7c9cff; transition: width .15s; }
+  .warn { margin-top: 10px; padding: 9px 11px; border-radius: 9px; background: #3a2226; color: #ffb4b4; font-size: 13px; line-height: 1.4; }
+  .hint { color: #8b92a6; font-size: 12px; margin: 16px 0 0; line-height: 1.5; }
+  .sub { padding-left: 4px; margin-top: 6px; }
+
+  /* ---------- Capture result popup ---------- */
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 20; display: flex;
+    align-items: center; justify-content: center; padding: 16px; }
+  #modal[hidden] { display: none; }
+  #modal .card { background: #12141c; border-radius: 16px; padding: 14px; max-width: 920px; width: 100%;
+    max-height: 100%; display: flex; flex-direction: column; gap: 10px; }
+  #shot { max-width: 100%; max-height: 62vh; object-fit: contain; border-radius: 8px; background: #000; align-self: center; }
+  #shotInfo { color: #8b92a6; font-size: 13px; }
+
+  /* ---------- Phones: panel becomes a bottom sheet ---------- */
+  @media (max-width: 700px) {
+    #panel { left: 8px; right: 8px; top: auto; bottom: 8px; width: auto; max-height: 58vh; }
+    #menuBtn { display: block; }
+    #panel:not(.closed) ~ #menuBtn { display: none; }
+    #hud { bottom: auto; top: 12px; }
+  }
+</style>
+</head>
+
+<body>
+<canvas id="view"></canvas>
+<div id="selBox" hidden></div>
+<div id="hud"></div>
+
+<aside id="panel">
+  <h1>Scatter Collage</h1>
+
+  <!-- 1. Load pictures -->
+  <label for="link">Google Drive folder link</label>
+  <input id="link" type="text" placeholder="https://drive.google.com/drive/folders/..." autocomplete="off">
+  <label for="pin" style="margin-top:10px">Your PIN <small style="color:#8b92a6">(the same one you use in the gallery maker)</small></label>
+  <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="PIN">
+  <div class="row">
+    <select id="detail" title="How sharp the pictures are. Bigger = sharper but uses more memory.">
+      <option value="300">Detail: Small (fast)</option>
+      <option value="400" selected>Detail: Medium</option>
+      <option value="600">Detail: Large</option>
+    </select>
+    <button id="loadBtn" class="primary">Load</button>
+  </div>
+  <label class="check"><input type="checkbox" id="incVideo" checked> Include videos <small>(shows one still frame)</small></label>
+  <label class="check"><input type="checkbox" id="viaWorker"> Load pictures through my Worker <small>(only if saving fails; needs the optional Worker add-on)</small></label>
+  <div id="warn" class="warn" hidden></div>
+  <div class="bar"><i id="barFill"></i></div>
+
+  <!-- 2. Layout -->
+  <h2>Layout</h2>
+  <label for="overlap">Overlap <b id="overlapV"></b></label>
+  <input type="range" id="overlap" min="0.4" max="4" step="0.1" value="2.2">
+  <label for="tilt">Random tilt <b id="tiltV"></b></label>
+  <input type="range" id="tilt" min="0" max="15" step="1" value="0">
+  <div class="row">
+    <button id="shuffleBtn">🎲 Shuffle</button>
+    <button id="fitBtn">Fit to screen</button>
+    <input type="color" id="bg" value="#0b0d12" title="Background colour">
+  </div>
+
+  <!-- 3. Effects (live preview: you see them right away) -->
+  <h2>Effects (live preview)</h2>
+  <label class="check"><input type="checkbox" id="caOn" checked> Chromatic aberration</label>
+  <div class="sub">
+    <label for="caS">Strength <b id="caSV"></b></label>
+    <input type="range" id="caS" min="0" max="100" value="40">
+    <select id="caMode">
+      <option value="lens" selected>Lens (stronger toward the edges)</option>
+      <option value="shift">Sideways shift (same everywhere)</option>
+    </select>
+  </div>
+  <label class="check"><input type="checkbox" id="vigOn" checked> Vignette</label>
+  <div class="sub">
+    <label for="vigS">Darkness <b id="vigSV"></b></label>
+    <input type="range" id="vigS" min="0" max="100" value="60">
+    <label for="vigZ">Clear centre size <b id="vigZV"></b></label>
+    <input type="range" id="vigZ" min="10" max="90" value="45">
+  </div>
+
+  <!-- 4. Capture -->
+  <h2>Capture</h2>
+  <select id="outScale" title="Bigger = sharper picture file, but the browser limits very large images.">
+    <option value="1">Output size: Standard (1×)</option>
+    <option value="1.5">Output size: Large (1.5×)</option>
+    <option value="2" selected>Output size: Huge (2×)</option>
+  </select>
+  <div class="row">
+    <button id="capFull" class="primary">📷 Capture full collage</button>
+  </div>
+  <div class="row">
+    <button id="capArea">✂️ Capture area</button>
+  </div>
+  <p class="hint">Drag = move around · Scroll or pinch = zoom.<br>
+    "Capture area": press it, then drag a box on the collage. Effects are applied to whatever is inside the box.</p>
+</aside>
+<button id="menuBtn">☰ Settings</button>
+
+<!-- Popup that shows the captured picture -->
+<div id="modal" hidden>
+  <div class="card">
+    <img id="shot" alt="Captured collage">
+    <small id="shotInfo"></small>
+    <div class="row">
+      <a id="dl" class="btn primary" download="collage.png">⬇ Download PNG</a>
+      <button id="closeBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Optional: re-use your gallery settings (WORKER_URL). If the file is missing, that's fine. -->
+<script src="gallery-config.js" onerror="void 0"></script>
+
+<script>
+(() => {
+"use strict";
+
+/* =====================================================================
+   0. SETTINGS
+   ===================================================================== */
+// Your Cloudflare Worker address. It is taken from gallery-config.js if that
+// file sits next to this page; otherwise the fallback below is used.
+const CFG = window.SITE_CONFIG || {};
+const WORKER_URL = (CFG.WORKER_URL || "https://gallery-proxy.doramongameing.workers.dev").replace(/\/+$/, "");
+
+const BASE_TILE  = 220;      // size of an "average" picture, in world units
+const MAX_SIDE   = 8192;     // browsers can't make huge canvases, so we cap the capture size
+const MAX_PIXELS = 25e6;     // ...and the total number of pixels (25 megapixels)
+const PARALLEL   = 6;        // how many pictures download at the same time
+
+/* =====================================================================
+   1. QUICK HELPERS
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+
+// Grab every control from the page once, so we can write ui.caOn instead of $("caOn") everywhere.
+const ui = {};
+["link","pin","detail","loadBtn","incVideo","viaWorker","warn","barFill","overlap","tilt","shuffleBtn","fitBtn","bg",
+ "caOn","caS","caMode","vigOn","vigS","vigZ","outScale","capFull","capArea","panel","menuBtn","hud",
+ "selBox","modal","shot","shotInfo","dl","closeBtn"].forEach(id => ui[id] = $(id));
+
+const view = $("view");
+
+function say(msg) { ui.hud.textContent = msg || ""; }
+function showWarn(msg) { ui.warn.hidden = !msg; ui.warn.textContent = msg || ""; }
+
+// A tiny "random number" machine we can re-start with a seed (same seed = same random numbers).
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function shuffleInPlace(arr, rnd) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+// Turn whatever the person pasted into a Google Drive folder ID.
+function parseFolderId(text) {
+  text = (text || "").trim();
+  let m = text.match(/folders\/([A-Za-z0-9_-]+)/);   // .../drive/folders/ID
+  if (m) return m[1];
+  m = text.match(/[?&]id=([A-Za-z0-9_-]+)/);         // ...open?id=ID
+  if (m) return m[1];
+  if (/^[A-Za-z0-9_-]{15,}$/.test(text)) return text; // just the ID itself
+  return "";
+}
+
+/* =====================================================================
+   2. STATE  (everything the page remembers)
+   ===================================================================== */
+const state = {
+  tiles: [],      // one entry per picture: { file, img, ready, aspect, cell, r[], cx, cy, w, h, rot }
+  order: [],      // the same tiles, in random "who is on top" order
+  cols: 1, rows: 1,
+  worldW: 1000, worldH: 750   // size of the collage "table" in world units
+};
+
+// The camera: cam.x/cam.y = the world point at the top-left corner of the window,
+// cam.z = how many screen pixels one world unit takes up (zoom).
+const cam = { x: 0, y: 0, z: 1 };
+let fitZ = 1;
+let loadToken = 0;          // lets us cancel an old loading run when a new one starts
+let selecting = false;      // true while "Capture area" is waiting for a drag
+
+/* =====================================================================
+   3. LAYOUT: where does every picture go?
+   ===================================================================== */
+
+// Give every picture new random numbers (a new "shuffle").
+function reshuffle() {
+  const rnd = mulberry32(Math.floor(Math.random() * 1e9));
+  const n = state.tiles.length;
+  // Split the table into a grid of cells that has about the same shape as the table (4:3).
+  // Each picture gets a random cell and a random nudge inside it, so pictures are
+  // spread evenly (no big empty gaps) but still look scattered.
+  state.cols = Math.max(1, Math.round(Math.sqrt(n * 4 / 3)));
+  state.rows = Math.ceil(n / state.cols);
+  const cells = [...Array(state.cols * state.rows).keys()];
+  shuffleInPlace(cells, rnd);
+  state.tiles.forEach((t, i) => {
+    t.cell = cells[i];
+    t.r = [rnd(), rnd(), rnd(), rnd()];   // random numbers used by layout()
+  });
+  state.order = state.tiles.slice();
+  shuffleInPlace(state.order, rnd);
+}
+
+// Work out the position, size and tilt of every picture.
+function layout() {
+  const n = state.tiles.length;
+  if (!n) return;
+  const overlap = +ui.overlap.value;
+  const tilt = (+ui.tilt.value) * Math.PI / 180;
+
+  // Table size: total area of all pictures divided by the overlap amount.
+  const area = n * BASE_TILE * BASE_TILE * 0.75 * 1.1 / overlap;
+  state.worldW = Math.max(BASE_TILE * 3, Math.sqrt(area * 4 / 3));
+  state.worldH = state.worldW * 0.75;
+
+  const { cols, rows, worldW: W, worldH: H } = state;
+  for (const t of state.tiles) {
+    const col = t.cell % cols, row = Math.floor(t.cell / cols);
+    t.cx = (col + 0.5 + (t.r[0] - 0.5) * 1.2) / cols * W;
+    t.cy = (row + 0.5 + (t.r[1] - 0.5) * 1.2) / rows * H;
+    const scale = 0.7 + t.r[2] * 0.7;                    // each picture is 70%-140% size
+    const a = BASE_TILE * BASE_TILE * 0.75 * scale * scale;
+    t.w = Math.sqrt(a * t.aspect);                       // keep the picture's real shape
+    t.h = t.w / t.aspect;
+    t.rot = (t.r[3] * 2 - 1) * tilt;
+  }
+}
+
+/* =====================================================================
+   4. CAMERA (pan / zoom)
+   ===================================================================== */
+function fit() {
+  const vw = innerWidth, vh = innerHeight;
+  cam.z = Math.min(vw / state.worldW, vh / state.worldH) * 0.94;
+  fitZ = cam.z;
+  cam.x = state.worldW / 2 - vw / cam.z / 2;
+  cam.y = state.worldH / 2 - vh / cam.z / 2;
+}
+
+function zoomAt(sx, sy, factor) {
+  const z2 = Math.min(5, Math.max(fitZ * 0.4, cam.z * factor));
+  const wx = cam.x + sx / cam.z, wy = cam.y + sy / cam.z;   // world point under the cursor
+  cam.z = z2;
+  cam.x = wx - sx / cam.z;                                  // keep that point under the cursor
+  cam.y = wy - sy / cam.z;
+  requestDraw();
+}
+
+// When "Overlap" changes the table gets bigger/smaller; keep looking at the same spot.
+function relayoutKeepView() {
+  const oldW = state.worldW, vw = innerWidth, vh = innerHeight;
+  const cxw = cam.x + vw / cam.z / 2, cyw = cam.y + vh / cam.z / 2;
+  layout();
+  const r = state.worldW / oldW;
+  cam.z /= r; fitZ /= r;
+  cam.x = cxw * r - vw / cam.z / 2;
+  cam.y = cyw * r - vh / cam.z / 2;
+  requestDraw();
+}
+
+/* =====================================================================
+   5. DRAWING + EFFECTS
+   One function draws any rectangle of the collage onto any canvas.
+   The live preview and the saved capture both use it, so what you see = what you get.
+   ===================================================================== */
+
+// Re-usable temporary canvases (making new ones every frame would be slow).
+const pool = {};
+function getCanvas(key, w, h) {
+  let c = key ? pool[key] : null;
+  if (!c) { c = document.createElement("canvas"); if (key) pool[key] = c; }
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return c;
+}
+function resetCtx(ctx) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+}
+
+// How the red / green / blue copies of the picture are placed for chromatic aberration.
+// Each copy is drawn slightly differently, so colours split apart at edges.
+function caChannels(fx, W) {
+  const a = fx.caStrength / 100;
+  if (fx.caMode === "shift") {
+    const d = a * 0.008 * W;           // sideways distance in pixels
+    const s = 1 + 2 * d / W;           // enlarge a touch so no empty strip appears at the edge
+    return [{ color: "#f00", s, dx: d }, { color: "#0f0", s, dx: 0 }, { color: "#00f", s, dx: -d }];
+  }
+  const k = a * 0.012;                 // lens style: each colour is zoomed a bit differently
+  return [{ color: "#f00", s: 1 + 2 * k, dx: 0 }, { color: "#0f0", s: 1 + k, dx: 0 }, { color: "#00f", s: 1, dx: 0 }];
+}
+
+// out      = the canvas to draw onto (already the size you want)
+// wx,wy,ww,wh = which part of the collage (world units) to draw
+// fx       = effect settings,  pooled = true for the live preview (re-use canvases)
+function renderRegion(out, wx, wy, ww, wh, fx, pooled) {
+  const W = out.width, H = out.height;
+  const k = W / ww;                                   // pixels per world unit
+
+  // Step 1: draw all the pictures onto a "scene" canvas
+  const scene = getCanvas(pooled ? "scene" : null, W, H);
+  const s = scene.getContext("2d");
+  resetCtx(s);
+  s.fillStyle = ui.bg.value;
+  s.fillRect(0, 0, W, H);
+  s.imageSmoothingEnabled = true;
+  s.imageSmoothingQuality = "high";
+  for (const t of state.order) {
+    if (!t.ready) continue;
+    const r = Math.hypot(t.w, t.h) / 2;               // skip pictures that are off-screen
+    if (t.cx + r < wx || t.cx - r > wx + ww || t.cy + r < wy || t.cy - r > wy + wh) continue;
+    s.setTransform(k, 0, 0, k, (t.cx - wx) * k, (t.cy - wy) * k);
+    if (t.rot) s.rotate(t.rot);
+    s.drawImage(t.img, -t.w / 2, -t.h / 2, t.w, t.h);
+  }
+  resetCtx(s);
+
+  // Step 2: copy the scene to the output, with chromatic aberration if switched on
+  const o = out.getContext("2d");
+  resetCtx(o);
+  if (fx.ca && fx.caStrength > 0) {
+    const tmp = getCanvas(pooled ? "tmp" : null, W, H);
+    const t2 = tmp.getContext("2d");
+    o.fillStyle = "#000";
+    o.fillRect(0, 0, W, H);
+    o.globalCompositeOperation = "lighter";           // "lighter" = add the colours together
+    for (const c of caChannels(fx, W)) {
+      resetCtx(t2);
+      t2.fillStyle = "#000"; t2.fillRect(0, 0, W, H);
+      t2.setTransform(c.s, 0, 0, c.s, W / 2 * (1 - c.s) + c.dx, H / 2 * (1 - c.s));
+      t2.drawImage(scene, 0, 0);                       // a shifted / zoomed copy of the scene
+      t2.setTransform(1, 0, 0, 1, 0, 0);
+      t2.globalCompositeOperation = "multiply";        // keep only ONE colour (red, green or blue)
+      t2.fillStyle = c.color; t2.fillRect(0, 0, W, H);
+      o.drawImage(tmp, 0, 0);                          // add that colour layer to the result
+    }
+    if (!pooled) { tmp.width = tmp.height = 0; }       // free memory after a capture
+  } else {
+    o.drawImage(scene, 0, 0);
+  }
+  o.globalCompositeOperation = "source-over";
+
+  // Step 3: vignette = dark soft edges
+  if (fx.vig && fx.vigStrength > 0) {
+    const r1 = Math.hypot(W, H) / 2;
+    const r0 = r1 * fx.vigSize / 100;
+    const a = fx.vigStrength / 100 * 0.95;
+    const g = o.createRadialGradient(W / 2, H / 2, r0, W / 2, H / 2, r1);
+    g.addColorStop(0, "rgba(0,0,0,0)");
+    g.addColorStop(0.55, `rgba(0,0,0,${a * 0.3})`);
+    g.addColorStop(1, `rgba(0,0,0,${a})`);
+    o.fillStyle = g;
+    o.fillRect(0, 0, W, H);
+  }
+  if (!pooled) { scene.width = scene.height = 0; }
+}
+
+function getFx() {
+  return {
+    ca: ui.caOn.checked, caStrength: +ui.caS.value, caMode: ui.caMode.value,
+    vig: ui.vigOn.checked, vigStrength: +ui.vigS.value, vigSize: +ui.vigZ.value
+  };
+}
+
+// Redraw the live view (at most once per screen refresh).
+let dirty = false;
+function requestDraw() {
+  if (dirty) return;
+  dirty = true;
+  requestAnimationFrame(draw);
+}
+function draw() {
+  dirty = false;
+  const vw = innerWidth, vh = innerHeight;
+  const dpr = Math.min(devicePixelRatio || 1, 1.5);
+  const pw = Math.round(vw * dpr), ph = Math.round(vh * dpr);
+  if (view.width !== pw || view.height !== ph) { view.width = pw; view.height = ph; }
+  renderRegion(view, cam.x, cam.y, vw / cam.z, vh / cam.z, getFx(), true);
+}
+
+/* =====================================================================
+   6. LOADING from Google Drive (through your Cloudflare Worker)
+   ===================================================================== */
+
+// Turn the Worker's error codes into a sentence a human can act on.
+function explainError(status, reason) {
+  switch (reason) {
+    case "badPin":          return "That PIN is not right.";
+    case "tooManyAttempts": return "Too many wrong PINs. Please wait 15 minutes and try again.";
+    case "originNotAllowed":return "Your Worker only accepts requests from your own website. Open this page from your GitHub Pages address (not by double-clicking the file).";
+    case "badFolderId":     return "That doesn't look like a valid Google Drive folder link.";
+    case "pinNotSet":       return "Your Worker has no PIN set (the PIN setting is missing in Cloudflare).";
+    case "kvMissing":       return "Your Worker is missing its GALLERIES storage setting in Cloudflare.";
+    case "secretMissing":   return "Your Worker is missing the GOOGLE_API_KEY secret.";
+  }
+  if (status === 404) return "Google can't find that folder. Check the link, and that it is shared as \"Anyone with the link\".";
+  if (status === 403) return "Google says that folder is private. Share it as \"Anyone with the link\" and try again.";
+  return `The Worker answered ${status}${reason ? " (" + reason + ")" : ""}.`;
+}
+
+// Ask the Worker for the list of files in the folder. This uses the Worker's existing
+// "folder" action (the same one the gallery maker uses), so it needs your PIN.
+// The Worker adds the secret API key itself and handles all the pages of results.
+async function listFolder(folderId, token) {
+  let r;
+  try {
+    r = await fetch(`${WORKER_URL}/admin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "folder", folder: folderId, pin: ui.pin.value.trim() })
+    });
+  } catch (e) {
+    throw new Error("Could not reach your Worker. Check your internet connection, and that this page is opened from your GitHub Pages address.");
+  }
+  let data = null;
+  try { data = await r.json(); } catch (e) {}
+  if (token !== loadToken) return [];
+  if (!r.ok) {
+    const reason = data && data.error && data.error.reason;
+    throw new Error(explainError(r.status, reason));
+  }
+  say(`Found ${(data.files || []).length} files…`);
+  return data.files || [];
+}
+
+// Build the address of a picture's thumbnail at the size we want.
+function thumbUrl(file, px) {
+  let u = file.thumbnailLink
+    ? file.thumbnailLink.replace(/=[a-z]\d+[^=]*$/i, "=s" + px)
+    : `https://lh3.googleusercontent.com/d/${file.id}=s${px}`;
+  if (ui.viaWorker.checked) u = `${WORKER_URL}/collage-img?u=${encodeURIComponent(u)}`;
+  return u;
+}
+
+// Some browsers let you SEE a picture but not SAVE a collage made from it. Check for that.
+let taintChecked = false;
+function checkSavable(img) {
+  if (taintChecked) return;
+  taintChecked = true;
+  try {
+    const c = document.createElement("canvas");
+    c.width = c.height = 1;
+    const x = c.getContext("2d");
+    x.drawImage(img, 0, 0, 1, 1);
+    x.getImageData(0, 0, 1, 1);
+  } catch (e) {
+    showWarn("Google's pictures can't be saved this way. Add the optional Worker add-on, tick \"Load pictures through my Worker\", and press Load again.");
+  }
+}
+
+function loadOne(tile, px, attempt = 0) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";      // needed so we are allowed to save the final collage
+    img.onload = () => {
+      tile.img = img;
+      tile.aspect = (img.naturalWidth / img.naturalHeight) || 4 / 3;
+      tile.ready = true;
+      checkSavable(img);
+      resolve();
+    };
+    img.onerror = () => {
+      if (attempt < 2) {                // try again a couple of times (Google sometimes says "slow down")
+        setTimeout(() => loadOne(tile, px, attempt + 1).then(resolve, reject), 700 * (attempt + 1));
+      } else reject(new Error("failed"));
+    };
+    img.src = thumbUrl(tile.file, px);
+  });
+}
+
+async function loadImages(token) {
+  const px = +ui.detail.value;
+  const total = state.tiles.length;
+  let next = 0, done = 0, ok = 0, failed = 0, timer = null;
+
+  // Update the screen now and then (not after every single picture – that would be slow).
+  const refresh = () => { timer = null; layout(); requestDraw(); };
+
+  async function runner() {
+    while (token === loadToken) {
+      const i = next++;
+      if (i >= total) return;
+      try { await loadOne(state.tiles[i], px); ok++; } catch (e) { failed++; }
+      done++;
+      ui.barFill.style.width = (done / total * 100) + "%";
+      say(`Loading pictures… ${done} / ${total}`);
+      if (!timer) timer = setTimeout(refresh, 150);
+    }
+  }
+  await Promise.all(Array.from({ length: PARALLEL }, runner));
+  if (token !== loadToken) return;
+  clearTimeout(timer);
+  refresh();
+
+  if (ok === 0) {
+    showWarn(ui.viaWorker.checked
+      ? "No picture could be loaded through your Worker. The optional picture add-on (/collage-img) may not be installed yet - untick the box to load directly from Google."
+      : "No picture could be loaded. Make sure the folder is shared as \"Anyone with the link\". If it is, tick \"Load pictures through my Worker\" (needs the optional Worker add-on) and press Load again.");
+    say("");
+  } else {
+    say(`${ok} pictures ready` + (failed ? ` (${failed} could not be loaded)` : ""));
+    setTimeout(() => { if (token === loadToken) say(""); }, 4000);
+  }
+}
+
+async function load() {
+  const id = parseFolderId(ui.link.value);
+  if (!id) { showWarn("That doesn't look like a Google Drive folder link. It should contain \"/folders/\"."); return; }
+  if (!ui.pin.value.trim()) { showWarn("Please type your PIN first."); ui.pin.focus(); return; }
+  try { localStorage.setItem("collage-last-link", ui.link.value); } catch (e) {}
+
+  const token = ++loadToken;          // starting a new load cancels any older one
+  taintChecked = false;
+  showWarn("");
+  ui.barFill.style.width = "0%";
+  state.tiles = []; state.order = [];
+  requestDraw();
+  say("Asking Google Drive for the file list…");
+
+  let files;
+  try {
+    files = await listFolder(id, token);
+  } catch (e) {
+    say("");
+    showWarn(e.message);
+    return;
+  }
+  if (token !== loadToken) return;
+
+  files = files.filter(f => (f.mimeType || "").startsWith("image/") ||
+                            (ui.incVideo.checked && (f.mimeType || "").startsWith("video/")));
+  if (!files.length) {
+    say("");
+    showWarn("No pictures or videos found in that folder. Check the link and that sharing is \"Anyone with the link\".");
+    return;
+  }
+
+  try { sessionStorage.setItem("collage-pin", ui.pin.value.trim()); } catch (e) {}   // forgotten when you close the tab
+  state.tiles = files.map(f => ({ file: f, img: null, ready: false, aspect: 4 / 3, cell: 0, r: [0, 0, 0, 0], cx: 0, cy: 0, w: 1, h: 1, rot: 0 }));
+  reshuffle();
+  layout();
+  fit();
+  requestDraw();
+  await loadImages(token);
+}
+
+/* =====================================================================
+   7. CAPTURE
+   ===================================================================== */
+let shotUrl = null;
+
+async function doCapture(wx, wy, ww, wh) {
+  if (!state.tiles.length) { say("Load a folder first."); return; }
+  const scale = +ui.outScale.value;           // output pixels per world unit
+  let outW = Math.max(1, Math.round(ww * scale));
+  let outH = Math.max(1, Math.round(wh * scale));
+  let f = Math.min(1, MAX_SIDE / Math.max(outW, outH), Math.sqrt(MAX_PIXELS / (outW * outH)));
+  let reduced = false;
+  if (f < 1) { outW = Math.max(1, Math.floor(outW * f)); outH = Math.max(1, Math.floor(outH * f)); reduced = true; }
+
+  say("Rendering your picture…");
+  await new Promise(r => setTimeout(r, 40));  // let the message appear first
+
+  const c = document.createElement("canvas");
+  c.width = outW; c.height = outH;
+  try {
+    renderRegion(c, wx, wy, ww, wh, getFx(), false);
+  } catch (e) {
+    say(""); showWarn("Not enough memory to render that size. Try a smaller output size or a smaller area.");
+    return;
+  }
+
+  c.toBlob(blob => {
+    c.width = c.height = 0;
+    say("");
+    if (!blob) { showWarn("The browser could not save the picture (too big, or the pictures are not savable). Try a smaller output size or tick \"Load pictures through my Worker\"."); return; }
+    if (shotUrl) URL.revokeObjectURL(shotUrl);
+    shotUrl = URL.createObjectURL(blob);
+    ui.shot.src = shotUrl;
+    const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+    ui.dl.href = shotUrl;
+    ui.dl.download = `collage-${stamp}.png`;
+    ui.shotInfo.textContent = `${outW} × ${outH} px · ${(blob.size / 1048576).toFixed(1)} MB` +
+      (reduced ? " · made a little smaller to fit the browser's limits" : "");
+    ui.modal.hidden = false;
+  }, "image/png");
+}
+
+function closeModal() {
+  ui.modal.hidden = true;
+  ui.shot.removeAttribute("src");
+}
+
+function setSelecting(on) {
+  selecting = on;
+  document.body.classList.toggle("selecting", on);
+  ui.capArea.classList.toggle("active", on);
+  ui.capArea.textContent = on ? "Drag a box on the collage… (Esc = cancel)" : "✂️ Capture area";
+  if (!on) ui.selBox.hidden = true;
+  if (on && innerWidth <= 700) ui.panel.classList.add("closed");   // get the panel out of the way on phones
+}
+
+/* =====================================================================
+   8. MOUSE / TOUCH: move, zoom, and drag a capture box
+   ===================================================================== */
+const pointers = new Map();     // fingers / mouse currently touching the canvas
+let selStart = null, pinchDist = 0;
+
+view.addEventListener("pointerdown", e => {
+  view.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (selecting && pointers.size === 1) {
+    selStart = { x: e.clientX, y: e.clientY };
+    Object.assign(ui.selBox.style, { left: e.clientX + "px", top: e.clientY + "px", width: "0px", height: "0px" });
+    ui.selBox.hidden = false;
+  } else if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+  }
+});
+
+view.addEventListener("pointermove", e => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  p.x = e.clientX; p.y = e.clientY;
+
+  if (selecting && selStart) {
+    const x = Math.min(selStart.x, e.clientX), y = Math.min(selStart.y, e.clientY);
+    Object.assign(ui.selBox.style, {
+      left: x + "px", top: y + "px",
+      width: Math.abs(e.clientX - selStart.x) + "px", height: Math.abs(e.clientY - selStart.y) + "px"
+    });
+  } else if (pointers.size === 1) {              // one finger = move the collage
+    cam.x -= dx / cam.z; cam.y -= dy / cam.z;
+    requestDraw();
+  } else if (pointers.size === 2) {              // two fingers = pinch zoom
+    const [a, b] = [...pointers.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchDist > 0) zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, d / pinchDist);
+    pinchDist = d;
+  }
+});
+
+function endPointer(e) {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.delete(e.pointerId);
+  pinchDist = 0;
+  if (selecting && selStart && e.type === "pointerup") {
+    const x0 = Math.min(selStart.x, e.clientX), y0 = Math.min(selStart.y, e.clientY);
+    const w = Math.abs(e.clientX - selStart.x), h = Math.abs(e.clientY - selStart.y);
+    selStart = null;
+    setSelecting(false);
+    if (w > 12 && h > 12) {
+      doCapture(cam.x + x0 / cam.z, cam.y + y0 / cam.z, w / cam.z, h / cam.z);   // screen box -> world box
+    }
+  } else if (e.type === "pointercancel") {
+    selStart = null;
+  }
+}
+view.addEventListener("pointerup", endPointer);
+view.addEventListener("pointercancel", endPointer);
+
+view.addEventListener("wheel", e => {
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
+
+/* =====================================================================
+   9. WIRING: connect buttons and sliders to the code above
+   ===================================================================== */
+
+// Show the number next to every slider
+document.querySelectorAll("input[type=range]").forEach(r => {
+  const label = $(r.id + "V");
+  const upd = () => { if (label) label.textContent = r.value; };
+  r.addEventListener("input", upd);
+  upd();
+});
+
+ui.loadBtn.addEventListener("click", load);
+ui.link.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+ui.pin.addEventListener("keydown", e => { if (e.key === "Enter") load(); });
+
+ui.overlap.addEventListener("input", relayoutKeepView);
+ui.tilt.addEventListener("input", () => { layout(); requestDraw(); });
+ui.shuffleBtn.addEventListener("click", () => { reshuffle(); layout(); requestDraw(); });
+ui.fitBtn.addEventListener("click", () => { fit(); requestDraw(); });
+
+// Anything that changes how it LOOKS just asks for a redraw (that's the live preview).
+["bg", "caOn", "caS", "caMode", "vigOn", "vigS", "vigZ"].forEach(id => {
+  ui[id].addEventListener("input", requestDraw);
+  ui[id].addEventListener("change", requestDraw);
+});
+
+ui.capFull.addEventListener("click", () => doCapture(0, 0, state.worldW, state.worldH));
+ui.capArea.addEventListener("click", () => {
+  if (!state.tiles.length) { say("Load a folder first."); return; }
+  setSelecting(!selecting);
+});
+
+ui.closeBtn.addEventListener("click", closeModal);
+ui.modal.addEventListener("click", e => { if (e.target === ui.modal) closeModal(); });
+ui.menuBtn.addEventListener("click", () => ui.panel.classList.remove("closed"));
+addEventListener("keydown", e => {
+  if (e.key === "Escape") { if (!ui.modal.hidden) closeModal(); else if (selecting) setSelecting(false); }
+});
+addEventListener("resize", requestDraw);
+
+// On phones, add a way to hide the panel again (tap the title).
+$("panel").querySelector("h1").addEventListener("click", () => {
+  if (innerWidth <= 700) ui.panel.classList.add("closed");
+});
+
+// Start-up: remember the last link, or take it from the address (?folder=LINK_OR_ID)
+try {
+  const fromUrl = new URLSearchParams(location.search).get("folder");
+  ui.link.value = fromUrl || localStorage.getItem("collage-last-link") || "";
+  ui.pin.value = sessionStorage.getItem("collage-pin") || "";
+  if (fromUrl && ui.pin.value) load();
+} catch (e) {}
+say("Paste a Drive folder link and press Load.");
+requestDraw();
+
+})();
+</script>
+</body>
+</html>
