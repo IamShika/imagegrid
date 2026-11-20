@@ -227,6 +227,7 @@
       <div class="row">
         <button id="btnCopyList" class="btn primary" type="button" data-i18n="send.copy">Copy list</button>
         <button id="btnDownloadList" class="btn" type="button" data-i18n="send.txt">Download .txt</button>
+        <button id="btnSendZip" class="btn" type="button" data-i18n="send.dl" hidden>Download my favorites (zip)</button>
         <button id="btnCloseSend" class="btn ghost" type="button" data-i18n="close">Close</button>
       </div>
       <p class="muted small" id="sendContactHint" hidden data-i18n="send.hint">Now send the list to your photographer.</p>
@@ -234,13 +235,43 @@
     </div>
   </div>
 
-  <!-- DOWNLOAD ALL (popup) -->
+  <!-- DOWNLOAD (popup): zip of all photos or of the customer's favorites -->
   <div id="dlModal" class="modal" hidden>
     <div class="modal-box">
-      <h2 data-i18n="dl.title">Download all photos</h2>
-      <p class="muted" data-i18n-html="dl.body">Google Drive opens in a new tab.</p>
+      <!-- New way: the zip is made on the customer's own device -->
+      <div id="dlNew" hidden>
+        <h2 data-i18n="dl.zipTitle">Download photos</h2>
+        <p class="muted" data-i18n="dl.intro">Get your photos in a zip file.</p>
+
+        <div class="seg" id="dlScope" role="group">
+          <button type="button" id="dlScopeAll" data-scope="all" data-i18n="dl.scopeAll">All photos</button>
+          <button type="button" id="dlScopeFavs" data-scope="favs"></button>
+        </div>
+        <label class="check dl-videos" id="dlVideosWrap" hidden>
+          <input type="checkbox" id="dlVideos" checked> <span data-i18n="dl.videos">Include videos</span>
+        </label>
+
+        <p class="muted dl-summary" id="dlSummary"></p>
+        <p class="muted small" id="dlPartsNote" hidden data-i18n="dl.partsNote"></p>
+        <ul class="dl-parts" id="dlParts"></ul>
+        <div class="row" id="dlAllRow" hidden>
+          <button id="btnDlAllParts" class="btn" type="button"></button>
+        </div>
+        <p class="dl-warn" id="dlWarn" role="status" hidden></p>
+        <p class="muted small" data-i18n="dl.tip">Keep this window open until the zip is saved.</p>
+        <p class="muted small"><a id="btnOpenDrive" class="dl-drive" target="_blank" rel="noopener" data-i18n="dl.drive">Prefer Google Drive? Open the folder</a></p>
+      </div>
+
+      <!-- Old way (old long links and the maker's preview): Google Drive does the zip -->
+      <div id="dlOld" hidden>
+        <h2 data-i18n="dl.title">Download all photos</h2>
+        <p class="muted" data-i18n-html="dl.body">Google Drive opens in a new tab.</p>
+        <div class="row">
+          <a id="btnOpenDrive2" class="btn primary" target="_blank" rel="noopener" data-i18n="dl.open">Open Google Drive</a>
+        </div>
+      </div>
+
       <div class="row">
-        <a id="btnOpenDrive" class="btn primary" target="_blank" rel="noopener" data-i18n="dl.open">Open Google Drive</a>
         <button id="btnCloseDl" class="btn ghost" type="button" data-i18n="close">Close</button>
       </div>
     </div>
@@ -248,6 +279,7 @@
 
   <script src="config.js"></script>
   <script src="lang.js"></script>
+  <script src="zip.js"></script>
   <script src="app.js"></script>
 </body>
-  </html>
+      </html>
