@@ -495,14 +495,305 @@
     });
   }
 
-  // ---------- "Download all" popup ----------
-  $('btnDownloadAll').addEventListener('click', () => {
-    if (!G || !G.folderId) return;
-    $('btnOpenDrive').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId);
+  // ============================================================
+  //  DOWNLOAD AS ZIP  ("Download all" and "Download my favorites")
+  //
+  //  How it works, in simple words:
+  //   - For each photo we ask your Worker for the original file (one request per photo).
+  //   - We pack the photos into a .zip right here on the customer's phone/computer (zip.js).
+  //   - Big galleries are cut into several smaller zips ("parts") so a phone doesn't run out of memory.
+  //   - The customer never has to touch Google Drive.
+  // ============================================================
+  const PART_BYTES = clamp(cfg.DOWNLOAD_PART_MB, 150, 20, 1000) * 1024 * 1024;  // size of one zip (config.js: DOWNLOAD_PART_MB)
+  const MAX_FILE_BYTES = 1024 * 1024 * 1024;     // a single file over 1 GB is left out of the zip
+  const PARALLEL = 4;                            // photos fetched at the same time
+  const TRIES = 3;                               // attempts for each photo
+
+  let dlMode = 'old';        // 'new' = zip in the browser, 'old' = open Google Drive
+  let dlScope = 'all';       // 'all' | 'favs'
+  let dlVideos = true;       // include videos?
+  let dlParts = [];          // the planned zip files
+  let dlSkipped = [];        // files too big for a zip
+  let dlBusy = false;        // is a part being made right now?
+  let dlCtrl = null;         // lets the Cancel button stop the downloads
+  let dlCache = new Map();   // photos already fetched (so "Try again" only fetches what failed)
+
+  const fileBytes = (f) => Number(f.size) || 0;
+  function fmtSize(n) {
+    if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
+    return (n / 1073741824).toFixed(1) + ' GB';
+  }
+  function namesText(names) {
+    const shown = names.slice(0, 5).join(', ');
+    return names.length > 5 ? shown + ' +' + (names.length - 5) : shown;
+  }
+  // "12 photos, 2 videos"
+  function whatText(files) {
+    const v = files.filter(isVideo).length;
+    const p = files.length - v;
+    return [p ? photosText(p) : '', v ? videosText(v) : ''].filter(Boolean).join(', ');
+  }
+
+  // Can this gallery make zips? (not in old links or in the maker's preview)
+  const zipAllowed = () => !!(G && G.code && G.folderId && G.P.allowDl);
+
+  // Decide which photos go into which zip
+  function planParts() {
+    const pool = items.filter((f) => (dlScope === 'favs' ? favs.has(f.id) : true) && (dlVideos || !isVideo(f)));
+    dlSkipped = pool.filter((f) => fileBytes(f) > MAX_FILE_BYTES);
+    const files = pool.filter((f) => fileBytes(f) <= MAX_FILE_BYTES);
+    dlParts = [];
+    let cur = null;
+    files.forEach((f) => {
+      if (!cur || (cur.files.length && cur.bytes + fileBytes(f) > PART_BYTES)) {
+        cur = { files: [], bytes: 0, state: 'idle', done: 0, doneBytes: 0, failed: [] };
+        dlParts.push(cur);
+      }
+      cur.files.push(f);
+      cur.bytes += fileBytes(f);
+    });
+  }
+
+  function openDownload(scope) {
+    if (!G) return;
+    if (zipAllowed()) {
+      dlMode = 'new';
+      dlScope = scope === 'favs' ? 'favs' : 'all';
+      dlVideos = true;
+      $('dlVideos').checked = true;
+      dlCache = new Map();
+      $('btnOpenDrive').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId);
+      planParts();
+    } else {
+      dlMode = 'old';
+      $('btnOpenDrive2').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId || '');
+    }
+    renderDl();
     $('dlModal').hidden = false;
+  }
+  function closeDownload() {
+    if (dlCtrl) dlCtrl.abort();                 // closing the window stops the downloading
+    dlCache = new Map();
+    $('dlModal').hidden = true;
+  }
+
+  // Draw the popup from the current plan
+  function renderDl() {
+    $('dlNew').hidden = dlMode !== 'new';
+    $('dlOld').hidden = dlMode !== 'old';
+    if (dlMode !== 'new') return;
+
+    const favCount = items.filter((f) => favs.has(f.id)).length;
+    $('dlScopeFavs').textContent = t('dl.scopeFavs') + ' (' + favCount + ')';
+    document.querySelectorAll('#dlScope button').forEach((b) => {
+      const on = b.dataset.scope === dlScope;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.disabled = dlBusy;
+    });
+    const scopeItems = items.filter((f) => dlScope === 'favs' ? favs.has(f.id) : true);
+    $('dlVideosWrap').hidden = !scopeItems.some(isVideo);
+    $('dlVideos').disabled = dlBusy;
+
+    const all = dlParts.reduce((a, p) => a.concat(p.files), []);
+    const total = dlParts.reduce((n, p) => n + p.bytes, 0);
+    if (dlScope === 'favs' && !favCount) $('dlSummary').textContent = t('dl.noFavs');
+    else $('dlSummary').textContent = all.length ? t('dl.summary', { what: whatText(all), size: fmtSize(total) }) : '';
+    $('dlPartsNote').hidden = dlParts.length < 2;
+
+    const list = $('dlParts');
+    list.innerHTML = '';
+    dlParts.forEach((p, i) => {
+      const li = document.createElement('li');
+      li.className = 'dl-part';
+      const top = document.createElement('div'); top.className = 'dl-part-top';
+      const info = document.createElement('div');
+      if (dlParts.length > 1) {
+        const nm = document.createElement('div'); nm.className = 'dl-part-name';
+        nm.textContent = t('dl.part', { i: i + 1, n: dlParts.length });
+        const inf = document.createElement('div'); inf.className = 'dl-part-info';
+        inf.textContent = t('dl.partInfo', { what: whatText(p.files), size: fmtSize(p.bytes) });
+        info.append(nm, inf);
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.addEventListener('click', () => (p.state === 'busy' || p.state === 'packing' ? dlCtrl && dlCtrl.abort() : startPart(p)));
+      const btns = document.createElement('div'); btns.className = 'dl-part-btns'; btns.append(btn);
+      top.append(info, btns);
+      const bar = document.createElement('div'); bar.className = 'dl-bar'; bar.append(document.createElement('i'));
+      const st = document.createElement('div'); st.className = 'dl-state'; st.setAttribute('role', 'status');
+      li.append(top, bar, st);
+      list.appendChild(li);
+      p.el = { li, btn, bar, st };
+      updatePart(p);
+    });
+
+    const left = dlParts.filter((p) => p.state !== 'done').length;
+    $('dlAllRow').hidden = dlParts.length < 2;
+    $('btnDlAllParts').textContent = t('dl.goAll', { n: left || dlParts.length });
+    $('btnDlAllParts').disabled = dlBusy || !left;
+    updateWarn();
+  }
+
+  // Refresh one part's button, progress bar and text (cheap, called often)
+  function updatePart(p) {
+    if (!p.el) return;
+    const busy = p.state === 'busy' || p.state === 'packing';
+    const single = dlParts.length === 1;
+    const label = busy ? 'dl.cancel'
+      : p.state === 'partial' || p.state === 'failed' ? 'dl.again'
+      : single ? 'dl.go' : 'dl.goPart';
+    p.el.btn.textContent = t(label);
+    p.el.btn.className = 'btn small' + (!busy && p.state !== 'done' && p.state !== 'partial' && p.state !== 'failed' ? ' primary' : '');
+    p.el.btn.disabled = dlBusy && !busy;
+    const pct = p.state === 'done' || p.state === 'partial' || p.state === 'packing' ? 100
+      : p.bytes ? Math.min(100, Math.round((p.doneBytes / p.bytes) * 100))
+      : Math.round((p.done / Math.max(1, p.files.length)) * 100);
+    p.el.bar.firstChild.style.width = pct + '%';
+    p.el.bar.hidden = p.state === 'idle' || p.state === 'cancelled';
+    let msg = '';
+    if (p.state === 'busy') msg = t('dl.busy', { done: p.done, total: p.files.length });
+    else if (p.state === 'packing') msg = t('dl.packing');
+    else if (p.state === 'done' || p.state === 'partial') msg = t('dl.done');
+    else if (p.state === 'cancelled') msg = t('dl.cancelled');
+    else if (p.state === 'failed') msg = t('dl.error');
+    p.el.st.textContent = msg;
+    p.el.st.classList.toggle('ok', p.state === 'done');
+    p.el.st.hidden = !msg;
+  }
+
+  // Messages about photos that could not be added
+  function updateWarn() {
+    const lines = [];
+    const failed = dlParts.reduce((a, p) => a.concat(p.state === 'partial' ? p.failed : []), []);
+    if (failed.length) lines.push(t('dl.failed', { n: failed.length, names: namesText(failed) }));
+    if (dlSkipped.length) lines.push(t('dl.skipped', { n: dlSkipped.length, names: namesText(dlSkipped.map((f) => f.name)) }));
+    $('dlWarn').textContent = lines.join('\n');
+    $('dlWarn').hidden = !lines.length;
+  }
+
+  const wait = (ms, signal) => new Promise((resolve) => {
+    const id = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => { clearTimeout(id); resolve(); }, { once: true });
   });
-  $('btnCloseDl').addEventListener('click', () => ($('dlModal').hidden = true));
-  $('dlModal').addEventListener('click', (e) => { if (e.target.id === 'dlModal') $('dlModal').hidden = true; });
+
+  // Get ONE original photo from the Worker, check it arrived whole, and fingerprint it
+  async function fetchFile(f, signal) {
+    let lastErr;
+    for (let attempt = 0; attempt < TRIES; attempt++) {
+      if (signal.aborted) throw new Error('cancelled');
+      try {
+        const res = await fetch(base() + '/file/' + encodeURIComponent(G.code) + '/' + encodeURIComponent(f.id), { signal });
+        if (!res.ok) { const e = new Error('HTTP ' + res.status); e.status = res.status; throw e; }
+        const blob = await res.blob();
+        const want = fileBytes(f);
+        if (want && blob.size !== want) throw new Error('incomplete');      // cut off half-way: try again
+        return { blob, crc: await window.ZipMaker.crc32Blob(blob) };
+      } catch (e) {
+        lastErr = e;
+        if (signal.aborted || e.status === 404 || e.status === 403 && attempt > 0) break;
+        await wait(700 * (attempt + 1), signal);
+      }
+    }
+    throw lastErr;
+  }
+
+  function saveFile(blob, name) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5 * 60 * 1000);
+  }
+
+  function zipName(i) {
+    // Plain English letters only in the zip's own name: some browsers turn Thai/accented names into "download" with no .zip
+    const title = ((G && G.title) || '').replace(/[^A-Za-z0-9 _-]/g, '').trim().replace(/\s+/g, '-').slice(0, 60) || 'gallery';
+    return title + '-' + (dlScope === 'favs' ? 'favorites' : 'photos') + (dlParts.length > 1 ? '-part-' + (i + 1) + '-of-' + dlParts.length : '') + '.zip';
+  }
+
+  // Make ONE zip: fetch its photos (a few at a time), pack them, save the file
+  async function makePart(p, i, signal) {
+    const Z = window.ZipMaker;
+    p.state = 'busy'; p.done = 0; p.doneBytes = 0; p.failed = [];
+    updatePart(p);
+
+    const got = new Array(p.files.length);
+    let next = 0;
+    const runner = async () => {
+      while (!signal.aborted) {
+        const k = next++;
+        if (k >= p.files.length) return;
+        const f = p.files[k];
+        try {
+          got[k] = dlCache.get(f.id) || (await fetchFile(f, signal));
+          dlCache.set(f.id, got[k]);
+        } catch (e) {
+          if (signal.aborted) return;
+          p.failed.push(f.name);
+        }
+        p.done++; p.doneBytes += fileBytes(f);
+        updatePart(p);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(PARALLEL, p.files.length) }, runner));
+
+    if (signal.aborted) { p.state = 'cancelled'; return; }
+    if (!got.some(Boolean)) { p.state = 'failed'; return; }
+
+    p.state = 'packing'; updatePart(p);
+    await new Promise((r) => setTimeout(r, 30));                  // let the screen update first
+    const taken = new Set();
+    const entries = [];
+    p.files.forEach((f, k) => {
+      if (got[k]) entries.push({ name: Z.uniqueName(Z.safeName(f.name, f.id), taken), blob: got[k].blob, crc: got[k].crc });
+    });
+    saveFile(Z.build(entries), zipName(i));
+    p.state = p.failed.length ? 'partial' : 'done';
+    if (!p.failed.length) p.files.forEach((f) => dlCache.delete(f.id));   // free the memory
+  }
+
+  // Run one or several parts, one after another
+  async function runParts(list) {
+    if (dlBusy) return;
+    dlBusy = true;
+    dlCtrl = new AbortController();
+    const signal = dlCtrl.signal;
+    renderDl();
+    try {
+      for (const p of list) {
+        if (signal.aborted) break;
+        await makePart(p, dlParts.indexOf(p), signal);
+        updatePart(p);
+      }
+    } catch (e) {
+      list.forEach((p) => { if (p.state === 'busy' || p.state === 'packing') p.state = 'failed'; });
+    }
+    dlBusy = false;
+    dlCtrl = null;
+    if (!$('dlModal').hidden) renderDl();
+  }
+  const startPart = (p) => runParts([p]);
+
+  $('btnDownloadAll').addEventListener('click', () => openDownload('all'));
+  $('btnSendZip').addEventListener('click', () => { $('sendModal').hidden = true; openDownload('favs'); });
+  $('btnDlAllParts').addEventListener('click', () => runParts(dlParts.filter((p) => p.state !== 'done')));
+  $('dlScope').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || dlBusy) return;
+    dlScope = b.dataset.scope === 'favs' ? 'favs' : 'all';
+    planParts(); renderDl();
+  });
+  $('dlVideos').addEventListener('change', (e) => {
+    if (dlBusy) return;
+    dlVideos = e.target.checked;
+    planParts(); renderDl();
+  });
+  $('btnCloseDl').addEventListener('click', closeDownload);
+  $('dlModal').addEventListener('click', (e) => { if (e.target.id === 'dlModal') closeDownload(); });
 
   // ---------- "Send my picks" popup ----------
   const pickedNames = () => items.filter((f) => favs.has(f.id)).map((f) => f.name);
@@ -511,6 +802,7 @@
     $('sendInfo').textContent = names.length ? t('send.some', { n: names.length }) : t('send.none');
     $('sendText').value = names.join('\n');
     renderSendContacts(names);
+    $('btnSendZip').hidden = !(zipAllowed() && names.length);
   }
   $('btnSend').addEventListener('click', () => {
     fillSendModal();
@@ -648,6 +940,7 @@
     renderContactFooter();
     renderLbCounter();
     if (!$('sendModal').hidden) fillSendModal();
+    if (!$('dlModal').hidden) renderDl();
   }
 
   // ============================================================
