@@ -17,7 +17,7 @@
 // ============================================================
 
 const FIELDS =
-  'nextPageToken,files(id,name,mimeType,thumbnailLink,' +
+  'nextPageToken,files(id,name,mimeType,size,thumbnailLink,' +
   'imageMediaMetadata(width,height,rotation),videoMediaMetadata(width,height))';
 
 const CODE_CHARS = 'abcdefghijkmnpqrstuvwxyz23456789';     // no confusing letters (l, o, 0, 1)
@@ -77,7 +77,12 @@ export default {
 
     try {
       if (request.method === 'POST' && path === '/admin') return await admin(request, env, reply, allowList, openToAll);
-      if (request.method === 'GET') return await listing(url, request, env, reply);
+      if (request.method === 'GET') {
+        // One photo's original file, for the website's "Download zip" (see downloadFile below)
+        const m = path.match(/^\/file\/([a-z0-9]{6,16})\/([A-Za-z0-9_-]{10,100})$/);
+        if (m) return await downloadFile(m[1], m[2], env, cors);
+        return await listing(url, request, env, reply);
+      }
       return fail(405, 'methodNotAllowed');
     } catch (e) {
       if (e instanceof HttpError) return fail(e.status, e.reason);
@@ -110,6 +115,46 @@ async function listing(url, request, env, reply) {
     return reply({ files, country }, 200, { 'Cache-Control': 'private, max-age=60' });
   }
   throw new HttpError(400, 'badFolderId');
+}
+
+// ============================================================
+//  Public: hand over ONE original photo/video (used by "Download zip")
+//  The website asks for the files one by one and packs the zip on the customer's own
+//  device. That keeps this Worker tiny and inside Cloudflare's free limits.
+//  Safety: only for galleries with download buttons ON, and only for files that are
+//  really inside that gallery's folder. The Google key never leaves this Worker.
+// ============================================================
+async function downloadFile(code, fileId, env, cors) {
+  const rec = await getRecord(env, code, true);
+  if (!rec) throw new HttpError(404, 'galleryNotFound');
+  if (rec.dl === false) throw new HttpError(403, 'downloadsOff');
+
+  const files = await listFolder(env, rec.f);                    // remembered for 5 minutes, so this is quick
+  if (!files.some((f) => f.id === fileId)) throw new HttpError(404, 'fileNotFound');
+
+  let res;
+  try {
+    res = await fetch(
+      'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) +
+      '?alt=media&supportsAllDrives=true&key=' + encodeURIComponent(env.GOOGLE_API_KEY)
+    );
+  } catch (_) {
+    throw new HttpError(502, 'driveUnreachable');
+  }
+  if (!res.ok) {
+    try { await res.body.cancel(); } catch (_) {}
+    // 403 here usually means Google's "too many downloads of this file" limit. The website will retry.
+    throw new HttpError(res.status === 404 ? 404 : res.status === 403 ? 403 : 502, 'driveDownloadFailed');
+  }
+
+  // Pass the file straight through (no copy in memory). Only pick the headers we want.
+  const headers = new Headers(cors);
+  headers.set('Content-Type', res.headers.get('Content-Type') || 'application/octet-stream');
+  const len = res.headers.get('Content-Length');
+  if (len) headers.set('Content-Length', len);
+  headers.set('Cache-Control', 'no-store');
+  headers.set('Access-Control-Expose-Headers', 'Content-Length');
+  return new Response(res.body, { status: 200, headers });
 }
 
 // What customers are allowed to see about a gallery
@@ -400,4 +445,4 @@ async function shareImage(code, env, request, ctx) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
+                                   }
