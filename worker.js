@@ -24,6 +24,9 @@ const CODE_CHARS = 'abcdefghijkmnpqrstuvwxyz23456789';     // no confusing lette
 const LAYOUTS = ['grid', 'square', 'column', 'oneup'];
 const ID_RE = /^[A-Za-z0-9_-]{10,100}$/;                    // Drive folder / file ids
 const CODE_RE = /^[a-z0-9]{6,16}$/;
+const PICK_ID_RE = /^[a-z0-9]{10,20}$/;                     // a customer's "picks id" (random, made by the website)
+const MAX_PICKS = 3000;                                     // favorites kept per customer
+const PICKS_DAYS = 90;                                      // forgotten after 90 days without a change
 const MAX_FAILS = 5;                                        // wrong PINs allowed ...
 const LOCK_SECONDS = 900;                                   // ... before a 15 minute pause
 const DEFAULT_DESC = 'ดูและเลือกรูปที่ชอบได้เลย · View and pick your favorite photos';
@@ -77,6 +80,7 @@ export default {
 
     try {
       if (request.method === 'POST' && path === '/admin') return await admin(request, env, reply, allowList, openToAll);
+      if (path === '/picks' && (request.method === 'GET' || request.method === 'POST')) return await picks(request, url, env, reply);
       if (request.method === 'GET') {
         // One photo's original file, for the website's "Download zip" (see downloadFile below)
         const m = path.match(/^\/file\/([a-z0-9]{6,16})\/([A-Za-z0-9_-]{10,100})$/);
@@ -155,6 +159,46 @@ async function downloadFile(code, fileId, env, cors) {
   headers.set('Cache-Control', 'no-store');
   headers.set('Access-Control-Expose-Headers', 'Content-Length');
   return new Response(res.body, { status: 200, headers });
+}
+
+// ============================================================
+//  Public: keep a customer's favorites so they can switch browsers
+//  (for example from LINE's browser to Safari/Chrome on the same phone).
+//  The website makes a random "picks id" and puts it in the address, so the other browser can ask for the same list.
+//  Stored in KV under p:GALLERYCODE:PICKSID for 90 days. Only file ids are stored, nothing personal.
+// ============================================================
+async function picks(request, url, env, reply) {
+  if (!env.GALLERIES) throw new HttpError(500, 'kvMissing');
+  let code, id, favs;
+  if (request.method === 'GET') {
+    code = url.searchParams.get('code'); id = url.searchParams.get('id');
+  } else {
+    const text = await request.text();
+    if (text.length > 200000) throw new HttpError(413, 'tooBig');
+    let body;
+    try { body = JSON.parse(text); } catch (_) { throw new HttpError(400, 'badJson'); }
+    code = body && body.code; id = body && body.id; favs = body && body.favs;
+  }
+  if (!CODE_RE.test(code || '') || !PICK_ID_RE.test(id || '')) throw new HttpError(400, 'badPicks');
+  if (!(await getRecord(env, code, true))) throw new HttpError(404, 'galleryNotFound');   // only real galleries
+  const key = 'p:' + code + ':' + id;
+
+  if (request.method === 'GET') {
+    const saved = await env.GALLERIES.get(key, { type: 'json' });
+    return reply({ favs: Array.isArray(saved) ? saved : [] }, 200, { 'Cache-Control': 'no-store' });
+  }
+
+  if (!Array.isArray(favs) || favs.length > MAX_PICKS || !favs.every((f) => typeof f === 'string' && ID_RE.test(f))) {
+    throw new HttpError(400, 'badPicks');
+  }
+  const list = [...new Set(favs)];
+  const old = await env.GALLERIES.get(key);                 // skip the write when nothing changed (KV allows 1,000 writes a day on the free plan)
+  if (!list.length) {
+    if (old !== null) await env.GALLERIES.delete(key);
+  } else if (old !== JSON.stringify(list)) {
+    await env.GALLERIES.put(key, JSON.stringify(list), { expirationTtl: PICKS_DAYS * 86400 });
+  }
+  return reply({ ok: true, n: list.length }, 200, { 'Cache-Control': 'no-store' });
 }
 
 // What customers are allowed to see about a gallery
@@ -445,4 +489,4 @@ async function shareImage(code, env, request, ctx) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-                                   }
+}

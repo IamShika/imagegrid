@@ -11,6 +11,18 @@
   <!-- Full-page background picture (set by the code) -->
   <div id="bgLayer" class="bg-layer" hidden><div id="bgImg" class="bg-img"></div></div>
 
+  <!-- Shown only inside LINE / Instagram / Facebook's own browser, where photos cannot be downloaded -->
+  <div id="inApp" class="inapp" role="alert" hidden>
+    <div class="inapp-text">
+      <strong data-i18n="inapp.title">Open in Chrome or Safari to download photos</strong>
+      <span data-i18n="inapp.steps">Tap the ⋯ menu (bottom right), then choose "Open in browser".</span>
+    </div>
+    <div class="inapp-btns">
+      <button id="btnInAppCopy" class="btn small" type="button" data-i18n="inapp.copy">Copy link</button>
+      <button id="btnInAppClose" class="inapp-x" type="button" aria-label="Close" data-i18n-aria="close">×</button>
+    </div>
+  </div>
+
   <!-- Top bar -->
   <header class="topbar" id="topbar">
     <div class="brand" id="brand">Gallery</div>
@@ -229,6 +241,7 @@
         <button id="btnCopyList" class="btn primary" type="button" data-i18n="send.copy">Copy list</button>
         <button id="btnDownloadList" class="btn" type="button" data-i18n="send.txt">Download .txt</button>
         <button id="btnSendZip" class="btn" type="button" data-i18n="send.dl" hidden>Download my favorites (zip)</button>
+        <button id="btnKeepPicks" class="btn" type="button" data-i18n="send.keep" hidden>Copy link to keep my picks in another browser</button>
         <button id="btnCloseSend" class="btn ghost" type="button" data-i18n="close">Close</button>
       </div>
       <p class="muted small" id="sendContactHint" hidden data-i18n="send.hint">Now send the list to your photographer.</p>
@@ -240,6 +253,7 @@
   <div id="dlModal" class="modal" hidden>
     <div class="modal-box">
       <h2 data-i18n="dl.zipTitle">Download photos</h2>
+      <p class="dl-warn" id="dlInApp" hidden data-i18n="inapp.dl">Downloads do not work inside this app. Open the page in Chrome or Safari first.</p>
 
       <!-- Main way: Google Drive packs everything for the customer -->
       <div class="dl-drive-card" id="dlDriveCard">

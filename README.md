@@ -1,5 +1,4 @@
-# [Drive Gallery](https://iamshika.github.io/imagegrid/)
-# [Collage Maker](https://iamshika.github.io/imagegrid/scatter-collage.html)
+# Drive Gallery
 
 A website that shows the photos and videos from a Google Drive folder in a dark grid (like Adobe Lightroom's share pages). Your files stay in Google Drive, so there is nothing else to pay for.
 
@@ -90,6 +89,18 @@ Right-click the customer's folder → **Share** → **General access: Anyone wit
   - Each photo is one Worker request (the free plan has 100,000 a day).
 - Old long links and the maker's preview only show the Drive button.
 - If you turn **download buttons off** for a gallery, all download buttons disappear and the Worker refuses file requests for that gallery.
+
+## LINE's browser and keeping favorites
+
+- **Photos can't be downloaded inside LINE's own browser.** Your links now end with `?openExternalBrowser=1`. This is a switch that LINE supports: when a customer taps the link in a LINE chat, LINE opens it in Chrome or Safari instead of its own browser. **Use the new links** (shown after Save & get link, or under My galleries → Copy link). Links you already sent still work, but open inside LINE.
+- If the page does end up inside LINE, Instagram or Facebook's browser, a yellow banner at the top says **Open in Chrome or Safari**, with a **Copy link** button. The page also tries once to ask LINE to open it outside (this part is a best effort, because LINE decides).
+- The download window also warns that downloads don't work in that browser.
+- **Favorites follow the customer to another browser** (for example LINE → Safari on the same phone). The website puts a random code in the address (`&p=...`). When the customer opens the same address in another browser (for example with **⋯ → Open in browser**), the favorites come with it. Send my picks also has **Copy link to keep my picks in another browser**.
+  - Favorites are saved in your Cloudflare KV (only photo ids, nothing personal) and forgotten after 90 days without a change. Up to 3,000 per customer.
+  - It needs the Worker to be updated (new `worker.js`) and the KV storage connected, like the gallery list.
+  - Each change of favorites is one KV write (after a short pause), and the free plan allows 1,000 writes a day. That is plenty for normal use.
+  - If a customer sends the address bar link to someone else, that person gets the same favorites. Tell customers to send your original link instead.
+  - Opening the same link in a second browser copies the favorites over. After that, each browser keeps its own list on that device and the server keeps the latest from whichever browser changed it.
 
 ## Big galleries (thousands of photos)
 

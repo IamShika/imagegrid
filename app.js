@@ -28,6 +28,11 @@
   const legacyFolder = params.get('f');                               // old long links: ?f=FOLDER_ID&...
   const isPreview = params.get('preview') === '1';                    // the live preview inside the gallery maker
 
+  // Inside LINE / Instagram / Facebook / TikTok's own browser, photos cannot be downloaded
+  const ua = navigator.userAgent || '';
+  const inLine = /\bLine\//i.test(ua);
+  const inApp = inLine || /FBAN|FBAV|FB_IAB|Instagram|TikTok|musical_ly|Bytedance/i.test(ua);
+
   // ---------- Things we keep track of ----------
   let G = null;              // the gallery on screen: { code, folderId, title, by, P }
   let items = [];            // every photo/video in the folder
@@ -214,11 +219,37 @@
     };
   }
 
+  // Banner for LINE / Instagram / Facebook browsers: "open in Chrome or Safari"
+  function setupInAppBanner() {
+    if (!inApp || isPreview) return;
+    $('dlInApp').hidden = false;
+    let closed = false;
+    try { closed = sessionStorage.getItem('inapp-closed') === '1'; } catch (_) {}
+    $('inApp').hidden = closed;
+    $('btnInAppClose').addEventListener('click', () => {
+      $('inApp').hidden = true;
+      try { sessionStorage.setItem('inapp-closed', '1'); } catch (_) {}
+    });
+    $('btnInAppCopy').addEventListener('click', async () => {
+      await pushPicks();
+      const ok = await copyText(linkWithPicks());
+      const b = $('btnInAppCopy');
+      b.textContent = t(ok ? 'inapp.copied' : 'res.ctrlc');
+      setTimeout(() => (b.textContent = t('inapp.copy')), 2000);
+    });
+  }
+
   async function initGallery() {
     $('brand').textContent = cfg.DEFAULT_STUDIO_NAME || t('gallery');
     if (isPreview) { initPreview(); return; }
 
     if (!hasWorker()) { showMessage('err.setup'); return; }
+
+    // Inside LINE: ask LINE to open this page in the phone's own browser (Chrome/Safari). Once only.
+    if (inLine && code && !params.has('openExternalBrowser')) {
+      location.replace(location.href + (location.search ? '&' : '?') + 'openExternalBrowser=1');
+      return;
+    }
 
     $('gallery').hidden = false;
     statusState = 'loading'; renderStatus();
@@ -244,6 +275,8 @@
     statusState = '';
     try {
       applyView(view, data.files);
+      initPicks();
+      setupInAppBanner();
     } catch (e) {
       // Never leave the customer on "Loading": say what went wrong
       showMessage('err.render', (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e)));
@@ -516,8 +549,80 @@
     if (favs.has(id)) favs.delete(id); else favs.add(id);
     try { localStorage.setItem(favKey, JSON.stringify([...favs])); } catch (_) {}
     updateFavCount();
+    schedulePush();
   }
   function updateFavCount() { $('favCount').textContent = favs.size; }
+
+  // ============================================================
+  //  KEEP FAVORITES WHEN THE CUSTOMER CHANGES BROWSER
+  //  (e.g. LINE's browser -> Safari/Chrome on the same phone; browsers cannot share their storage)
+  //  Each customer gets a random "picks id". It is kept in the page address (?p=...), so when the
+  //  customer taps "Open in browser", the new browser gets the same id and asks the Worker for the favorites.
+  // ============================================================
+  const PICK_RE = /^[a-z0-9]{10,20}$/;
+  let pickId = null;          // this customer's picks id for this gallery
+  let pushTimer = null;
+  let lastPushed = '';        // what the server already has (so we only send changes)
+
+  function newPickId() {
+    const a = new Uint8Array(12);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(a);
+    else for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256);
+    return Array.from(a, (b) => (b % 36).toString(36)).join('');
+  }
+
+  // The page address without LINE's "open in browser" switch, but with the picks id
+  function linkWithPicks() {
+    const u = new URL(location.href);
+    u.searchParams.delete('openExternalBrowser');
+    return u.toString();
+  }
+
+  // Send the favorites to the Worker (only when they changed). Silent if it fails: the phone still has them.
+  function pushPicks() {
+    clearTimeout(pushTimer);
+    if (!pickId || !G || !G.code) return Promise.resolve();
+    const body = JSON.stringify({ code: G.code, id: pickId, favs: [...favs] });
+    if (body === lastPushed) return Promise.resolve();
+    lastPushed = body;
+    return fetch(base() + '/picks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      keepalive: body.length < 60000,                      // lets it finish even if the page is closing
+    }).then((r) => { if (!r.ok) lastPushed = ''; }).catch(() => { lastPushed = ''; });
+  }
+  function schedulePush() {
+    if (!pickId) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(pushPicks, 2500);               // wait until they stop tapping hearts
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') pushPicks(); });
+  window.addEventListener('pagehide', pushPicks);
+
+  async function initPicks() {
+    if (isPreview || !G || !G.code) return;
+    const fromUrl = PICK_RE.test(params.get('p') || '') ? params.get('p') : null;
+    let stored = null;
+    try { stored = localStorage.getItem('pick:' + G.code); } catch (_) {}
+    if (!PICK_RE.test(stored || '')) stored = null;
+    pickId = fromUrl || stored || newPickId();
+    try { localStorage.setItem('pick:' + G.code, pickId); } catch (_) {}
+    try {                                                   // keep the id in the address bar, so "open in browser" carries it
+      const u = new URL(location.href); u.searchParams.set('p', pickId);
+      history.replaceState(null, '', u.toString());
+    } catch (_) {}
+
+    if (fromUrl && fromUrl !== stored) {                    // we arrived from another browser: bring its favorites along
+      try {
+        const r = await callWorker(base() + '/picks?code=' + encodeURIComponent(G.code) + '&id=' + encodeURIComponent(pickId));
+        const known = new Set(items.map((f) => f.id));
+        (r.favs || []).forEach((id) => { if (known.has(id)) favs.add(id); });
+        try { localStorage.setItem(favKey, JSON.stringify([...favs])); } catch (_) {}
+        updateFavCount(); syncTileHearts();
+        if (showFavsOnly) renderGrid();
+      } catch (_) {}
+    }
+    if (favs.size) schedulePush();                          // make sure the server has what this phone has
+  }
 
   $('btnFavFilter').addEventListener('click', () => {
     showFavsOnly = !showFavsOnly;
@@ -896,7 +1001,15 @@
     $('sendText').value = names.join('\n');
     renderSendContacts(names);
     $('btnSendZip').hidden = !(zipAllowed() && names.length && names.length <= ZIP_MAX_FAV);
+    $('btnKeepPicks').hidden = !(pickId && names.length);
   }
+  $('btnKeepPicks').addEventListener('click', async () => {
+    await pushPicks();
+    const ok = await copyText(linkWithPicks());
+    const b = $('btnKeepPicks');
+    b.textContent = t(ok ? 'send.keepDone' : 'res.ctrlc');
+    setTimeout(() => (b.textContent = t('send.keep')), 2500);
+  });
   $('btnSend').addEventListener('click', () => {
     fillSendModal();
     $('sendModal').hidden = false;
@@ -1301,10 +1414,11 @@
 
     // ---------- save, and show the links ----------
     function showLinks() {
-      const share = base() + '/g/' + S.code;
+      // "?openExternalBrowser=1" makes LINE open the link in Chrome/Safari instead of its own browser
+      const share = base() + '/g/' + S.code + '?openExternalBrowser=1';
       $('outLink').value = share;
       $('btnOpenLink').href = share;
-      $('outDirect').value = location.origin + location.pathname + '?id=' + S.code;
+      $('outDirect').value = location.origin + location.pathname + '?id=' + S.code + '&openExternalBrowser=1';
       $('linksBox').hidden = false;
     }
     async function save() {
@@ -1369,7 +1483,7 @@
         };
         mk('mine.edit', 'primary', () => editGallery(g.code));
         mk('mine.copy', '', async (b) => {
-          const ok = await copyText(base() + '/g/' + g.code);
+          const ok = await copyText(base() + '/g/' + g.code + '?openExternalBrowser=1');
           b.textContent = t(ok ? 'res.copied' : 'res.ctrlc');
           setTimeout(() => (b.textContent = t('mine.copy')), 2000);
         });
