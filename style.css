@@ -123,8 +123,7 @@ body.noscroll { overflow: hidden; }
   position: relative; overflow: hidden; cursor: pointer;
   background: #262626;
 }
-/* Tile shape comes from aspect-ratio. Tiles far off-screen are not drawn at all (content-visibility), which keeps thousands of photos smooth */
-.tile { aspect-ratio: var(--r); content-visibility: auto; contain-intrinsic-size: auto 0; }
+.tile::before { content: ""; display: block; padding-bottom: calc(100% / var(--r)); }
 
 /* 1) Photo Grid: rows of equal height, photos keep their own shape (like Lightroom) */
 .layout-grid::after { content: ""; flex-grow: 1000000; } /* keeps the last row from stretching */
@@ -135,7 +134,7 @@ body.noscroll { overflow: hidden; }
 
 /* 2) Square: every photo is a neat square, same size */
 .layout-square { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); }
-.layout-square .tile { aspect-ratio: 1; }
+.layout-square .tile::before { padding-bottom: 100%; }
 
 /* 3) Column: columns side by side, photos keep their shape */
 .layout-column { display: flex; flex-wrap: nowrap; align-items: flex-start; gap: var(--gap); }
@@ -409,3 +408,5 @@ body.noscroll { overflow: hidden; }
 
 /* "load more" marker under the grid */
 .more { height: 1px; }
+
+.err-detail { margin-top: 14px; font: 12px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); word-break: break-word; }

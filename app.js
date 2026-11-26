@@ -101,8 +101,10 @@
   }
 
   // A full-page message (errors). We keep the message KEY so it can switch language.
-  function showMessage(prefix) {
+  let msgDetail = '';        // technical details of an unexpected error, shown small so a customer can screenshot it
+  function showMessage(prefix, detail) {
     msgPrefix = prefix;
+    msgDetail = detail || '';
     $('setup').hidden = true;
     $('gallery').hidden = true;
     setActions(false);
@@ -115,6 +117,10 @@
     const h = document.createElement('h2'); h.textContent = t(msgPrefix + '.h');
     const p = document.createElement('p');  p.textContent = t(msgPrefix + '.t');
     box.append(h, p);
+    if (msgDetail) {
+      const d = document.createElement('p'); d.className = 'err-detail'; d.textContent = msgDetail;
+      box.append(d);
+    }
     box.hidden = false;
   }
 
@@ -136,7 +142,18 @@
   const notWorker = () => { const e = new Error('Not the gallery Worker'); e.reason = 'notWorker'; return e; };
 
   async function fetchGallery(id) {
-    const body = await callWorker(base() + '/?id=' + encodeURIComponent(id));
+    // Give up after 45 s instead of showing "Loading" forever (slow or stuck connection)
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = setTimeout(() => { if (ctrl) ctrl.abort(); }, 45000);
+    let body;
+    try {
+      body = await callWorker(base() + '/?id=' + encodeURIComponent(id), ctrl ? { signal: ctrl.signal } : undefined);
+    } catch (e) {
+      if (ctrl && ctrl.signal.aborted) { const err = new Error('Timeout'); err.reason = 'timeout'; throw err; }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
     // The address answered, but not like our Worker: it isn't the gallery Worker.
     if (!Array.isArray(body.files) || !body.settings) throw notWorker();
     return body;
@@ -153,6 +170,7 @@
     if (e.reason === 'legacyOff') return 'err.legacy';
     if (e.status === 404) return 'err.notfound';
     if (e.reason === 'notWorker') return 'err.notworker';
+    if (e.reason === 'timeout') return 'err.slow';
     if (e.reason === 'originNotAllowed') return 'err.origin';
     if (e.reason === 'badFolderId') return 'err.badfolder';
     if (e.status === 403 && (e.reason === 'accessNotConfigured' || e.reason === 'SERVICE_DISABLED')) return 'err.apioff';
@@ -224,7 +242,12 @@
     L.hintCountry(data.country);                   // Thai visitors get Thai
     if (!data.files.length) { showMessage('err.empty'); return; }
     statusState = '';
-    applyView(view, data.files);
+    try {
+      applyView(view, data.files);
+    } catch (e) {
+      // Never leave the customer on "Loading": say what went wrong
+      showMessage('err.render', (e && e.name ? e.name + ': ' : '') + (e && e.message ? e.message : String(e)));
+    }
   }
 
   // The live preview inside the gallery maker: the maker sends us the photos and settings.
@@ -1406,5 +1429,13 @@
   //  START
   // ============================================================
   L.onChange(() => { galleryRefresh(); adminRefresh(); });
+  // Last safety net: an unexpected error while the gallery is still on "Loading" gets shown on screen
+  window.addEventListener('error', (ev) => {
+    if (statusState === 'loading' && !msgPrefix) showMessage('err.render', (ev.message || 'error') + (ev.lineno ? ' (line ' + ev.lineno + ')' : ''));
+  });
+  window.addEventListener('unhandledrejection', (ev) => {
+    if (statusState === 'loading' && !msgPrefix) showMessage('err.render', String((ev.reason && ev.reason.message) || ev.reason || 'error'));
+  });
+
   if (code || rawId || legacyFolder || isPreview) initGallery(); else initAdmin();
 })();
