@@ -320,12 +320,17 @@
   }
 
   // Tell the grid how many photos per row, and how big the gaps are
+  // How many photos per row right now (computer vs phone)
+  function currentCols() {
+    const desktop = previewDevice ? previewDevice === 'desktop' : window.innerWidth > 800;
+    return desktop ? G.P.cols : G.P.colsPhone;
+  }
+
   function applyLayout() {
     const grid = $('grid');
     if (!grid || !G || !visible.length) return;
     const P = G.P;
-    const desktop = previewDevice ? previewDevice === 'desktop' : window.innerWidth > 800;
-    const cols = desktop ? P.cols : P.colsPhone;
+    const cols = currentCols();
     grid.style.setProperty('--cols', cols);
     grid.style.setProperty('--gap', P.gap + 'px');
 
@@ -338,6 +343,8 @@
         grid.style.setProperty('--row-h', Math.round(Math.min(700, Math.max(80, rowH))) + 'px');
       }
     }
+    // Column layout is built from separate columns, so a new column count means drawing them again
+    if (P.layout === 'column' && grid.dataset.cols !== String(cols)) renderGrid(true);
   }
 
   let resizeTimer = null;
@@ -346,64 +353,137 @@
     resizeTimer = setTimeout(applyLayout, 150);
   });
 
-  function renderGrid() {
+  // ---------- Drawing the photos ----------
+  // A gallery can have thousands of photos. Drawing them all at once makes phones crawl,
+  // so we draw BATCH photos first and the next BATCH whenever the customer scrolls near the end.
+  const BATCH = 48;
+  let shown = 0;               // how many of `visible` are on the screen so far
+  let colHeights = [];         // Column layout: how tall each column is so far
+  let moreObserver = null;
+
+  // Thumbnail width to ask Google for: just sharp enough for the tile, not bigger (saves a lot of data)
+  function thumbWidth() {
+    if (G.P.layout === 'oneup') return 1400;
+    const tile = ($('grid').clientWidth || window.innerWidth) / currentCols();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const wide = G.P.layout === 'grid' ? 1.2 : 1;          // Photo Grid: wide photos get wider tiles
+    return Math.min(800, Math.max(160, Math.ceil((tile * dpr * wide) / 80) * 80));
+  }
+
+  function renderGrid(keepShown) {
     visible = showFavsOnly ? items.filter((f) => favs.has(f.id)) : items;
     const grid = $('grid');
+    const want = keepShown ? shown : 0;
     grid.innerHTML = '';
     grid.className = 'grid layout-' + G.P.layout;
-    const thumbW = G.P.layout === 'oneup' ? 1400 : 700;     // big single photos need a sharper thumbnail
+    shown = 0;
 
     statusState = !visible.length && showFavsOnly ? 'nofavs' : '';
     renderStatus();
 
-    const frag = document.createDocumentFragment();
-    visible.forEach((f, i) => {
-      const li = document.createElement('li');
-      li.className = 'tile';
-      li.style.setProperty('--r', f.ratio.toFixed(4));
-
-      const open = document.createElement('button');
-      open.className = 'open'; open.type = 'button';
-      open.setAttribute('aria-label', f.name);
-      open.addEventListener('click', () => openLightbox(i));
-
-      const img = document.createElement('img');
-      img.alt = f.name; img.loading = 'lazy'; img.decoding = 'async';
-      img.addEventListener('load', () => img.classList.add('loaded'));
-      img.addEventListener('error', () => {
-        if (!img.dataset.retry) { img.dataset.retry = '1'; img.src = fallbackThumb(f, thumbW); }
-      });
-      img.src = thumb(f, thumbW);
-      open.appendChild(img);
-      li.appendChild(open);
-
-      if (isVideo(f)) {
-        const b = document.createElement('div');
-        b.className = 'badge';
-        b.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12"><path d="M7 4l13 8-13 8z"/></svg>';
-        li.appendChild(b);
+    if (G.P.layout === 'column') {
+      // Real columns (instead of CSS columns) so photos never jump between columns while more are added
+      const cols = currentCols();
+      grid.dataset.cols = String(cols);
+      colHeights = new Array(cols).fill(0);
+      for (let c = 0; c < cols; c++) {
+        const col = document.createElement('li');
+        col.className = 'col';
+        col.appendChild(document.createElement('ul'));
+        grid.appendChild(col);
       }
+    }
+    applyLayout();            // sets columns, spacing and row height before the first photos appear
+    renderMore();
+    while (shown < want && shown < visible.length) renderMore();
+    watchMore();
+  }
 
-      const nm = document.createElement('div');
-      nm.className = 'name'; nm.textContent = f.name;
-      li.appendChild(nm);
+  // Draw the next batch
+  function renderMore() {
+    const grid = $('grid');
+    const end = Math.min(shown + BATCH, visible.length);
+    const thumbW = thumbWidth();
+    const lists = G.P.layout === 'column' ? grid.querySelectorAll('.col > ul') : null;
+    const frag = lists ? null : document.createDocumentFragment();
+    for (let i = shown; i < end; i++) {
+      const li = makeTile(visible[i], i, thumbW);
+      if (lists) {
+        let c = 0;                                                 // put it in the shortest column
+        for (let k = 1; k < colHeights.length; k++) if (colHeights[k] < colHeights[c]) c = k;
+        lists[c].appendChild(li);
+        colHeights[c] += 1 / visible[i].ratio;
+      } else {
+        frag.appendChild(li);
+      }
+    }
+    if (frag) grid.appendChild(frag);
+    shown = end;
+    $('more').hidden = shown >= visible.length;
+  }
 
-      const fav = document.createElement('button');
-      fav.className = 'fav' + (favs.has(f.id) ? ' on' : '');
-      fav.type = 'button';
-      fav.setAttribute('aria-label', t('lb.fav'));
-      fav.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>';
-      fav.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggleFav(f.id);
-        if (showFavsOnly) renderGrid(); else fav.classList.toggle('on', favs.has(f.id));
-      });
-      li.appendChild(fav);
+  // Ask the browser to tell us when the end of the grid is near
+  function watchMore() {
+    const more = $('more');
+    if (!('IntersectionObserver' in window)) {               // very old browser: just draw everything
+      while (shown < visible.length) renderMore();
+      return;
+    }
+    if (!moreObserver) {
+      moreObserver = new IntersectionObserver((entries) => {
+        if (!entries.some((e) => e.isIntersecting) || shown >= visible.length) return;
+        renderMore();
+        moreObserver.unobserve(more); moreObserver.observe(more);  // check again: still near the end?
+      }, { rootMargin: '1500px 0px' });
+    }
+    moreObserver.unobserve(more); moreObserver.observe(more);
+  }
 
-      frag.appendChild(li);
+  // One photo tile
+  function makeTile(f, i, thumbW) {
+    const li = document.createElement('li');
+    li.className = 'tile';
+    li.dataset.i = i;                                // position in `visible` (the tile order on screen is not always the same)
+    li.style.setProperty('--r', f.ratio.toFixed(4));
+
+    const open = document.createElement('button');
+    open.className = 'open'; open.type = 'button';
+    open.setAttribute('aria-label', f.name);
+    open.addEventListener('click', () => openLightbox(i));
+
+    const img = document.createElement('img');
+    img.alt = f.name; img.loading = 'lazy'; img.decoding = 'async';
+    img.addEventListener('load', () => img.classList.add('loaded'));
+    img.addEventListener('error', () => {
+      if (!img.dataset.retry) { img.dataset.retry = '1'; img.src = fallbackThumb(f, thumbW); }
     });
-    grid.appendChild(frag);
-    applyLayout();
+    img.src = thumb(f, thumbW);
+    open.appendChild(img);
+    li.appendChild(open);
+
+    if (isVideo(f)) {
+      const b = document.createElement('div');
+      b.className = 'badge';
+      b.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12"><path d="M7 4l13 8-13 8z"/></svg>';
+      li.appendChild(b);
+    }
+
+    const nm = document.createElement('div');
+    nm.className = 'name'; nm.textContent = f.name;
+    li.appendChild(nm);
+
+    const fav = document.createElement('button');
+    fav.className = 'fav' + (favs.has(f.id) ? ' on' : '');
+    fav.type = 'button';
+    fav.setAttribute('aria-label', t('lb.fav'));
+    fav.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" class="heart-icon"><path d="M12 21s-7.5-4.6-9.6-9.2C.9 8.4 2.6 5 6 5c2 0 3.4 1.1 4 2.2h4C14.6 6.1 16 5 18 5c3.4 0 5.1 3.4 3.6 6.8C19.5 16.4 12 21 12 21z"/></svg>';
+    fav.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFav(f.id);
+      if (showFavsOnly) renderGrid(); else fav.classList.toggle('on', favs.has(f.id));
+    });
+    li.appendChild(fav);
+    return li;
   }
 
   // ============================================================
@@ -536,11 +616,15 @@
   }
 
   // Can this gallery make zips? (not in old links or in the maker's preview)
-  const zipAllowed = () => !!(G && G.code && G.folderId && G.P.allowDl);
+  // Zip is only for a customer's FAVORITES (a few photos). Everything else goes through Google Drive.
+  // config.js: ZIP_MAX_FAVORITES (default 100). 0 = turn the zip off completely.
+  const ZIP_MAX_FAV = clamp(cfg.ZIP_MAX_FAVORITES, 100, 0, 500);
+  const zipAllowed = () => !!(G && G.code && G.folderId && G.P.allowDl && ZIP_MAX_FAV > 0);
 
   // Decide which photos go into which zip
   function planParts() {
-    const pool = items.filter((f) => (dlScope === 'favs' ? favs.has(f.id) : true) && (dlVideos || !isVideo(f)));
+    const pool = items.filter((f) => favs.has(f.id) && (dlVideos || !isVideo(f)));
+    if (items.filter((f) => favs.has(f.id)).length > ZIP_MAX_FAV) { dlParts = []; dlSkipped = []; return; }
     dlSkipped = pool.filter((f) => fileBytes(f) > MAX_FILE_BYTES);
     const files = pool.filter((f) => fileBytes(f) <= MAX_FILE_BYTES);
     dlParts = [];
@@ -555,19 +639,18 @@
     });
   }
 
-  function openDownload(scope) {
+  function openDownload() {
     if (!G) return;
-    if (zipAllowed()) {
-      dlMode = 'new';
-      dlScope = scope === 'favs' ? 'favs' : 'all';
+    // The Google Drive button is always the main thing in the popup
+    $('dlDriveCard').hidden = !G.folderId;
+    $('btnOpenDrive').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId || '');
+    dlMode = zipAllowed() ? 'new' : 'old';
+    if (dlMode === 'new') {
+      dlScope = 'favs';
       dlVideos = true;
       $('dlVideos').checked = true;
       dlCache = new Map();
-      $('btnOpenDrive').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId);
       planParts();
-    } else {
-      dlMode = 'old';
-      $('btnOpenDrive2').href = 'https://drive.google.com/drive/folders/' + encodeURIComponent(G.folderId || '');
     }
     renderDl();
     $('dlModal').hidden = false;
@@ -581,24 +664,17 @@
   // Draw the popup from the current plan
   function renderDl() {
     $('dlNew').hidden = dlMode !== 'new';
-    $('dlOld').hidden = dlMode !== 'old';
     if (dlMode !== 'new') return;
 
     const favCount = items.filter((f) => favs.has(f.id)).length;
-    $('dlScopeFavs').textContent = t('dl.scopeFavs') + ' (' + favCount + ')';
-    document.querySelectorAll('#dlScope button').forEach((b) => {
-      const on = b.dataset.scope === dlScope;
-      b.classList.toggle('on', on);
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      b.disabled = dlBusy;
-    });
-    const scopeItems = items.filter((f) => dlScope === 'favs' ? favs.has(f.id) : true);
+    const scopeItems = items.filter((f) => favs.has(f.id));
     $('dlVideosWrap').hidden = !scopeItems.some(isVideo);
     $('dlVideos').disabled = dlBusy;
 
     const all = dlParts.reduce((a, p) => a.concat(p.files), []);
     const total = dlParts.reduce((n, p) => n + p.bytes, 0);
-    if (dlScope === 'favs' && !favCount) $('dlSummary').textContent = t('dl.noFavs');
+    if (!favCount) $('dlSummary').textContent = t('dl.noFavs');
+    else if (favCount > ZIP_MAX_FAV) $('dlSummary').textContent = t('dl.favTooMany', { n: favCount, max: ZIP_MAX_FAV });
     else $('dlSummary').textContent = all.length ? t('dl.summary', { what: whatText(all), size: fmtSize(total) }) : '';
     $('dlPartsNote').hidden = dlParts.length < 2;
 
@@ -778,15 +854,9 @@
   }
   const startPart = (p) => runParts([p]);
 
-  $('btnDownloadAll').addEventListener('click', () => openDownload('all'));
-  $('btnSendZip').addEventListener('click', () => { $('sendModal').hidden = true; openDownload('favs'); });
+  $('btnDownloadAll').addEventListener('click', openDownload);
+  $('btnSendZip').addEventListener('click', () => { $('sendModal').hidden = true; openDownload(); });
   $('btnDlAllParts').addEventListener('click', () => runParts(dlParts.filter((p) => p.state !== 'done')));
-  $('dlScope').addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b || dlBusy) return;
-    dlScope = b.dataset.scope === 'favs' ? 'favs' : 'all';
-    planParts(); renderDl();
-  });
   $('dlVideos').addEventListener('change', (e) => {
     if (dlBusy) return;
     dlVideos = e.target.checked;
@@ -802,7 +872,7 @@
     $('sendInfo').textContent = names.length ? t('send.some', { n: names.length }) : t('send.none');
     $('sendText').value = names.join('\n');
     renderSendContacts(names);
-    $('btnSendZip').hidden = !(zipAllowed() && names.length);
+    $('btnSendZip').hidden = !(zipAllowed() && names.length && names.length <= ZIP_MAX_FAV);
   }
   $('btnSend').addEventListener('click', () => {
     fillSendModal();
@@ -852,8 +922,8 @@
   }
 
   function syncTileHearts() {
-    document.querySelectorAll('.tile').forEach((li, i) => {
-      const f = visible[i];
+    document.querySelectorAll('.tile').forEach((li) => {
+      const f = visible[Number(li.dataset.i)];
       const btn = li.querySelector('.fav');
       if (f && btn) btn.classList.toggle('on', favs.has(f.id));
     });

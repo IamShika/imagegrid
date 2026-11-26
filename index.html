@@ -179,6 +179,7 @@
       </div>
       <div id="status" class="status"></div>
       <ul id="grid" class="grid"></ul>
+      <div id="more" class="more" hidden></div>   <!-- when this comes near the screen, the next photos are drawn -->
 
       <footer id="contact" class="contact" hidden>
         <p id="contactText"></p>
@@ -235,22 +236,28 @@
     </div>
   </div>
 
-  <!-- DOWNLOAD (popup): zip of all photos or of the customer's favorites -->
+  <!-- DOWNLOAD (popup): big Google Drive button first, zip of favorites below -->
   <div id="dlModal" class="modal" hidden>
     <div class="modal-box">
-      <!-- New way: the zip is made on the customer's own device -->
-      <div id="dlNew" hidden>
-        <h2 data-i18n="dl.zipTitle">Download photos</h2>
-        <p class="muted" data-i18n="dl.intro">Get your photos in a zip file.</p>
+      <h2 data-i18n="dl.zipTitle">Download photos</h2>
 
-        <div class="seg" id="dlScope" role="group">
-          <button type="button" id="dlScopeAll" data-scope="all" data-i18n="dl.scopeAll">All photos</button>
-          <button type="button" id="dlScopeFavs" data-scope="favs"></button>
-        </div>
+      <!-- Main way: Google Drive packs everything for the customer -->
+      <div class="dl-drive-card" id="dlDriveCard">
+        <span class="dl-badge" data-i18n="dl.best">Best for all photos</span>
+        <a id="btnOpenDrive" class="dl-drive-btn" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 4v11m0 0l-4.5-4.5M12 15l4.5-4.5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span data-i18n="dl.driveBtn">Download all from Google Drive</span>
+        </a>
+        <p class="dl-drive-how" data-i18n="dl.driveHow">Google Drive opens in a new tab. Tap the folder name at the top, then Download.</p>
+      </div>
+
+      <!-- Extra: zip of only the photos the customer picked (made on their own device) -->
+      <div id="dlNew" class="dl-fav" hidden>
+        <h3 data-i18n="dl.favTitle">Only want your favorites?</h3>
+        <p class="muted small" data-i18n="dl.favIntro">Get just the photos you picked in one zip file.</p>
         <label class="check dl-videos" id="dlVideosWrap" hidden>
           <input type="checkbox" id="dlVideos" checked> <span data-i18n="dl.videos">Include videos</span>
         </label>
-
         <p class="muted dl-summary" id="dlSummary"></p>
         <p class="muted small" id="dlPartsNote" hidden data-i18n="dl.partsNote"></p>
         <ul class="dl-parts" id="dlParts"></ul>
@@ -259,16 +266,6 @@
         </div>
         <p class="dl-warn" id="dlWarn" role="status" hidden></p>
         <p class="muted small" data-i18n="dl.tip">Keep this window open until the zip is saved.</p>
-        <p class="muted small"><a id="btnOpenDrive" class="dl-drive" target="_blank" rel="noopener" data-i18n="dl.drive">Prefer Google Drive? Open the folder</a></p>
-      </div>
-
-      <!-- Old way (old long links and the maker's preview): Google Drive does the zip -->
-      <div id="dlOld" hidden>
-        <h2 data-i18n="dl.title">Download all photos</h2>
-        <p class="muted" data-i18n-html="dl.body">Google Drive opens in a new tab.</p>
-        <div class="row">
-          <a id="btnOpenDrive2" class="btn primary" target="_blank" rel="noopener" data-i18n="dl.open">Open Google Drive</a>
-        </div>
       </div>
 
       <div class="row">
@@ -282,4 +279,4 @@
   <script src="zip.js"></script>
   <script src="app.js"></script>
 </body>
-      </html>
+</html>

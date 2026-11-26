@@ -1,5 +1,4 @@
-# [Drive Gallery](https://iamshika.github.io/imagegrid/)
-# [Collage Maker](https://iamshika.github.io/imagegrid/scatter-collage.html)
+# Drive Gallery
 
 A website that shows the photos and videos from a Google Drive folder in a dark grid (like Adobe Lightroom's share pages). Your files stay in Google Drive, so there is nothing else to pay for.
 
@@ -7,13 +6,13 @@ A website that shows the photos and videos from a Google Drive folder in a dark 
 
 | Piece | Where | Secret? |
 |---|---|---|
-| The website: `index.html`, `style.css`, `lang.js`, `app.js`, `config.js` | GitHub Pages (public) | No secrets in these files |
+| The website: `index.html`, `style.css`, `lang.js`, `zip.js`, `app.js`, `config.js` | GitHub Pages (public) | No secrets in these files |
 | `worker.js`, your Google API key, your PIN, your saved galleries | Cloudflare (Worker + KV) | Key and PIN are stored as **secrets** inside Cloudflare, never in a file |
 
 **What your customer can do**
 - See all photos in a grid (or Square / Column / One-up), click one to view it big, flip with arrow keys or swipe
 - Tap the ♡ on the photos they like, then press **Send my picks** to copy the list or open your Instagram, LINE or email
-- Download photos, or tap **Download all**
+- Tap **Download all** for a big Google Drive download button, or get a **zip of just their favorites** (also under **Send my picks**)
 - Switch between **ENG | TH** (Thai is shown first for Thai visitors)
 
 **What you can do** (in the gallery maker, protected by your PIN)
@@ -61,7 +60,7 @@ The names in Cloudflare's menus change from time to time, so they may look a lit
 
 1. Open `config.js` and check `WORKER_URL` is your Worker address. Fill in your studio name, Instagram, LINE and email.
 2. Create a **Public** repository (e.g. `gallery`).
-3. Upload `index.html`, `style.css`, `lang.js`, `app.js`, `config.js`, `README.md`, then **Commit changes**. Do not upload `worker.js`.
+3. Upload `index.html`, `style.css`, `lang.js`, `zip.js`, `app.js`, `config.js`, `README.md`, then **Commit changes**. Do not upload `worker.js`.
 4. **Settings → Pages → Branch: `main` / `(root)` → Save.**
 5. After a minute your site is live at `https://YOURNAME.github.io/gallery/`.
 
@@ -78,6 +77,26 @@ Right-click the customer's folder → **Share** → **General access: Anyone wit
 5. Later: **My galleries** lets you **Edit** (same link, new look), **Copy link** or **Delete** (the link stops working).
 
 ---
+
+## Downloading photos
+
+- **Download all** opens a window with a big blue **Download all from Google Drive** button. It opens your Drive folder in a new tab. The customer taps the folder name at the top, then **Download**, and Google makes the zip files itself. This is the way to get **all** photos, even thousands. Nothing goes through Cloudflare, so there is no load on your Worker.
+- Below it, **Only want your favorites?** makes one zip of just the photos the customer picked ♡. It is made on the customer's own phone or computer; your Worker only passes each photo along (it never zips anything).
+  - It works for up to 100 favorites. To change that, add this line to `config.js`: `ZIP_MAX_FAVORITES: 100,` (any number up to 500). Use `ZIP_MAX_FAVORITES: 0,` to turn the favorites zip off completely, so only the Drive button is left.
+  - Favorites over about 150 MB are split into parts. Change that with `DOWNLOAD_PART_MB: 150,` (between 20 and 1000).
+  - The zip holds the **original files**, so it can be big. The window shows the size first. A file over 1 GB is left out.
+  - If a photo fails it is retried 3 times, then the zip is saved without it and **Try again** fetches only the missing ones.
+  - Each photo is one Worker request (the free plan has 100,000 a day).
+- Old long links and the maker's preview only show the Drive button.
+- If you turn **download buttons off** for a gallery, all download buttons disappear and the Worker refuses file requests for that gallery.
+
+## Big galleries (thousands of photos)
+
+- The gallery draws about 48 photos first and more as the customer scrolls, so 2,800 photos open fast on a phone.
+- Thumbnails are small (just big enough for the screen), so much less data is used.
+- Videos and photos far off-screen are not drawn until needed.
+- The first load of a big folder still needs Google to list every file (a few seconds for thousands). After that it is remembered for a few minutes.
+- Tip: very large galleries are much easier on customers when split into several folders (for example one per event), but it is not required.
 
 ## Languages
 
@@ -104,6 +123,7 @@ Right-click the customer's folder → **Share** → **General access: Anyone wit
 
 ## Good to know
 
+- **Updating:** when you get new files, replace the Worker code in Cloudflare with the new `worker.js` and re-upload the website files. Keep your `config.js`.
 - **Old links** (the long ones with `?f=…`) stop working once your Worker has a PIN. Make new links in the gallery maker. To keep old links alive for a while, add a **Text** variable `LEGACY_OPEN` = `1` in Cloudflare, then delete it when you're done.
 - **Sub-folders** are not shown. Use one folder per gallery.
 - **Videos** play in Google's own player.
@@ -127,5 +147,6 @@ Right-click the customer's folder → **Share** → **General access: Anyone wit
 | "Drive API is not turned on" | Enable **Google Drive API** in your Google Cloud project |
 | "Folder not found" / "This folder is private" | Share the folder as **Anyone with the link → Viewer** |
 | "This link is outdated" | It's an old long link. Make a new one in the gallery maker |
+| Zip says "Something went wrong" or a photo can't be added | Check the internet and press **Try again**. If it keeps happening, make sure the Worker has the newest `worker.js` and that the folder is still shared as "Anyone with the link" |
 | "Gallery not found" | The code is wrong, or the gallery was deleted |
 | LINE shows no banner picture | Open `https://YOUR-WORKER/img/CODE` in a browser. If it shows the picture, LINE may have cached an old preview. If not, tell me what you see |
