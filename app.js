@@ -1092,7 +1092,14 @@
     }
 
     renderLbCounter();
-    $('lbDownload').href = 'https://drive.google.com/uc?export=download&id=' + f.id;
+    if (G.code) {
+      // Our own download link: the browser saves the file straight away. (Google's link opens the Drive app, which only shows the picture.)
+      $('lbDownload').href = base() + '/file/' + encodeURIComponent(G.code) + '/' + encodeURIComponent(f.id) + '?dl=1';
+      $('lbDownload').removeAttribute('target');
+    } else {                                              // old long links and the maker's preview
+      $('lbDownload').href = 'https://drive.google.com/uc?export=download&id=' + f.id;
+      $('lbDownload').target = '_blank';
+    }
     $('lbDownload').hidden = !G.P.allowDl;
     $('lbFav').classList.toggle('on', favs.has(f.id));
     $('lbPrev').hidden = i === 0;
